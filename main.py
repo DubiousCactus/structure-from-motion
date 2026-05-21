@@ -44,6 +44,8 @@ class FrameTuple:
     frame_a_features: ImageFeatures
     frame_b_features: ImageFeatures
     frame_a_to_b_matches: Sequence[cv.DMatch]
+    fundamental_matrix: Optional[np.ndarray] = None
+    essential_matrix: Optional[np.ndarray] = None
 
 
 class RANSAC:
@@ -56,6 +58,7 @@ class RANSAC:
     ):
         self.frame_tuples = frame_tuples
         self.frame_inliers = []
+        self.frame_pair_F = []
         self.consensus_min = len(frame_tuples) * consensus_ratio
         self.max_iter = max_iter
         self.threshold = threshold
@@ -146,6 +149,7 @@ class RANSAC:
                     inliers = this_inliers
                     # if this_err < self.threshold
 
+            f_tuple.fundamental_matrix = best_fit
             self.frame_inliers.append(inliers)
 
     def draw_matches(self):
@@ -187,8 +191,18 @@ class RANSAC:
 
 
 class PosePredictor:
-    def _compute_essential_matrix(self):
-        raise NotImplementedError
+    def __init__(self, frame_tuples: List[FrameTuple], K: np.ndarray) -> None:
+        self.frame_tuples = frame_tuples
+        assert K.shape == (3, 3)
+        self.K = K
+
+    def _compute_essential_matrix(self, F: np.ndarray):
+        assert F.shape == (3, 3)
+        K_rank3 = self.K.T @ F @ self.K
+        U, S, Vh = np.linalg.svd(K_rank3)
+        S[-1] = 0
+        K_rank2 = U @ np.diag(S) @ Vh
+        return K_rank2
 
     def fit(self, points: np.ndarray):
         """
@@ -211,13 +225,22 @@ class BundleAdjustment:
 
 
 @app.command()
-def extract_and_match(frames_path: str, debug: Optional[bool] = False):
+def extract_and_match(
+    frames_path: str,
+    intrinsics_path: Optional[str] = None,
+    max_frames: Optional[int] = None,
+    debug: Optional[bool] = False,
+):
+    if intrinsics_path is not None and not os.path.isfile(intrinsics_path):
+        raise FileNotFoundError(f"Intrinsics not found at {intrinsics_path}")
     # INFO: Stage 1: feature extraction using ORB
     orb = cv.ORB_create()
     frame_features = []
     for i, frame_file in tqdm(
         enumerate(sorted(os.listdir(frames_path))), desc="Extracting features"
     ):
+        if i == max_frames:
+            break
         frame_path = os.path.join(frames_path, frame_file)
         img = cv.imread(frame_path, cv.IMREAD_GRAYSCALE)
         kp = orb.detect(img, None)
@@ -288,10 +311,21 @@ def extract_and_match(frames_path: str, debug: Optional[bool] = False):
     # it's an outlier.
     ransac = RANSAC(frame_tuples)
     inliers = ransac.filter()
-    ransac.draw_matches()
+    if debug:
+        ransac.draw_matches()
+    assert all(
+        [isinstance(f_tpl.fundamental_matrix, np.ndarray) for f_tpl in frame_tuples]
+    ), "Fundamental matrix not computed for all frames during RANSAC"
 
     # INFO: Stage 4: Camera pose prediction
-    poses = PosePredictor().fit(inliers)
+    if intrinsics_path is None:
+        raise NotImplementedError(
+            "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
+        )
+    else:
+        K = np.load(intrinsics_path)
+
+    poses = PosePredictor(frame_tuples, K).fit(inliers)
 
     # INFO: Stage 5: Check for Cheirality condition using Triangulation
     _ = Triangulator().triangulate()
