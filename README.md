@@ -10,8 +10,7 @@ entertainment in real-time applications.
 I will first implement a basic SfM pipeline from scratch in Python with Numpy. This is
 to fully understand the subject and have a reference implementation.
 
-### 1. Python prototypes
-
+### 1. Python prototypes (learning the fundamentals)
 
 **SfM**
 - [x] Feature Detection & Matching 
@@ -20,8 +19,11 @@ to fully understand the subject and have a reference implementation.
 - [x] Estimating Essential Matrix from Fundamental Matrix
 - [x] Estimate Camera Pose from Essential Matrix
 - [x] Check for Cheirality Condition using Triangulation
+- [ ] Point refinement via non-linear triangulation
 - [ ] Perspective-n-Point
 - [ ] Bundle Adjustment
+
+See my [notes](./NOTES.md).
 
 **SLAM**
 We just go from there into modern graph-based methods.
@@ -41,11 +43,13 @@ C++ part (the old bits) (from [my old project](github.com/DubiousCactus/retina))
 - [ ] Feature matching
 - [ ] SfM
 
-Python part (SfM prototype, [this project]()):
+Python part (SfM prototype, [this project](https://github.com/DubiousCactus/structure-from-motion)):
 - [x] Opencv-based ORB detection and matching
 - [x] Epipolar geometry-based match refinement with RANSAC
-- [ ] Camera pose estimation
-- [ ] Triangulation
+- [x] Camera pose estimation
+- [x] Triangulation
+- [x] Non-linear triangulation for point refinement
+- [ ] PnP / UPnP
 - [ ] Bundle adjustment
 
 
@@ -62,4 +66,5 @@ Zig part (putting it all together):
 Here are the resources I've used for this project:
 - [sfm course notes](https://cmsc426.github.io/sfm/#fundmatrix)
 - [Epipolar Geometry and the Fundamental Matrix, Hartley and Zisserman](https://www.robots.ox.ac.uk/~vgg/hzbook/hzbook1/HZepipolar.pdf)
-- [5-point motion estimation made easy, Li and Hartley](https://users.cecs.anu.edu.au/~hongdong/new5pt_cameraREady_ver_1.pdf)
+- [5-point motion estimation made easy, Li and Hartley](https://users.cecs.anu.edu.au/~hongdong/new5pt_cameraREady_ver_1.pdf-)
+- [Foundations of Computer Vision](https://visionbook.mit.edu/)
