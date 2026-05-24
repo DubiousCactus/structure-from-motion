@@ -12,13 +12,14 @@ to fully understand the subject and have a reference implementation.
 
 ### 1. Python prototypes
 
+
 **SfM**
 - [x] Feature Detection & Matching 
 - [x] Estimating Fundamental Matrix (F)
 - [x] RANSAC outlier rejection with F
 - [x] Estimating Essential Matrix from Fundamental Matrix
-- [ ] Estimate Camera Pose from Essential Matrix
-- [ ] Check for Cheirality Condition using Triangulation
+- [x] Estimate Camera Pose from Essential Matrix
+- [x] Check for Cheirality Condition using Triangulation
 - [ ] Perspective-n-Point
 - [ ] Bundle Adjustment
 
@@ -26,12 +27,12 @@ to fully understand the subject and have a reference implementation.
 We just go from there into modern graph-based methods.
 
 ### 2. Zig real-time 3D vision library
-I want to recycle my previous C++ project (arlite) into -- finally -- an AR/SLAM/SfM
-library with minimal dependencies. Once my python prototype is built, I can take that
-along with what I built in C++ and put it all together in a Zig library for real-time
-general-purpose AR/SLAM/SfM (CPU/GPU).
+I want to recycle [my previous C++ project](github.com/DubiousCactus/retina) into --
+finally -- an AR/SLAM/SfM library with minimal dependencies. Once my python prototype is
+built, I can take that along with what I built in C++ and put it all together in a Zig
+library for real-time general-purpose AR/SLAM/SfM (CPU/GPU).
 
-C++ part (the old bits):
+C++ part (the old bits) (from [my old project](github.com/DubiousCactus/retina)):
 - [x] libav video decoding (ffmpeg lib)
 - [x] basic math library for image operations (conv, rot, gaussian blur, etc.)
 - [x] FAST
@@ -40,7 +41,7 @@ C++ part (the old bits):
 - [ ] Feature matching
 - [ ] SfM
 
-Python part (SfM prototype):
+Python part (SfM prototype, [this project]()):
 - [x] Opencv-based ORB detection and matching
 - [x] Epipolar geometry-based match refinement with RANSAC
 - [ ] Camera pose estimation
@@ -56,3 +57,9 @@ Zig part (putting it all together):
 - [ ] abstracted dispatch layer (CPU, GPU, others)
 - [ ] real-time graphics rendering
 - [ ] 3D Gaussian Splatting rendering
+
+# Literature
+Here are the resources I've used for this project:
+- [sfm course notes](https://cmsc426.github.io/sfm/#fundmatrix)
+- [Epipolar Geometry and the Fundamental Matrix, Hartley and Zisserman](https://www.robots.ox.ac.uk/~vgg/hzbook/hzbook1/HZepipolar.pdf)
+- [5-point motion estimation made easy, Li and Hartley](https://users.cecs.anu.edu.au/~hongdong/new5pt_cameraREady_ver_1.pdf)

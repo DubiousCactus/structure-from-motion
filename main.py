@@ -46,6 +46,8 @@ class FrameTuple:
     frame_a_to_b_matches: Sequence[cv.DMatch]
     fundamental_matrix: Optional[np.ndarray] = None
     essential_matrix: Optional[np.ndarray] = None
+    cam_pose_a: Optional[np.ndarray] = None
+    cam_pose_b: Optional[np.ndarray] = None
 
 
 class RANSAC:
@@ -97,11 +99,14 @@ class RANSAC:
         F = U @ np.diag(S) @ Vh
         return F
 
-    def filter(self):
+    def filter(self) -> List[np.ndarray]:
         """
         Filter out outliers of a set of feature matches using RANSAC and the epipolar
         constraint as condition. For each set of candidate matches, we compute the
         Fundamental matrix and check for the epipolar constraint to be respected.
+
+        Returns:
+        inliers: List[(N,)] a list of boolean masks for the inliers of each frame
         """
         for f_tuple in self.frame_tuples:
             inliers, best_fit, best_fit_err = None, None, np.inf
@@ -151,6 +156,7 @@ class RANSAC:
 
             f_tuple.fundamental_matrix = best_fit
             self.frame_inliers.append(inliers)
+        return self.frame_inliers
 
     def draw_matches(self):
         for f, inliers in zip(self.frame_tuples, self.frame_inliers):
@@ -204,19 +210,95 @@ class PosePredictor:
         K_rank2 = U @ np.diag(S) @ Vh
         return K_rank2
 
-    def fit(self, points: np.ndarray):
+    def fit(self, inlier_observations: List[np.ndarray]):
         """
-        Fit camera poses to points observed in two images via Perspective-n-Point.
+        Fit camera poses to points observed in two images using the Essential matrix.
         """
-        raise NotImplementedError
-
-
-class Triangulator:
-    def _check_cheirality_condition(self):
-        raise NotImplementedError
-
-    def triangulate(self):
-        raise NotImplementedError
+        # First we define the W matrix which is useful for the essential matrix
+        # decomposition, where E = SR, S=UZU^T and R=UWV^T or R=UW^TV^T, where t=U[:,
+        # -1] ie the translation is the last column of U.
+        W = np.array(
+            [
+                [0, -1, 0],
+                [1, 0, 0],
+                [0, 0, 1],
+            ]
+        )
+        assert len(inlier_observations) == len(self.frame_tuples)
+        for i, f_tpl in enumerate(self.frame_tuples):
+            assert f_tpl.fundamental_matrix is not None
+            E = self._compute_essential_matrix(f_tpl.fundamental_matrix)
+            f_tpl.essential_matrix = E
+            U, S_diag, Vt = np.linalg.svd(E)
+            # We have four potential solutions: ([R_1|t_1], [R_1|t_2], [R_2|t_1], [R_2|t_2])
+            # WARN: det(R)=1. If that is not the case, i.e. det(R)=-1, we must corect by
+            # setting t = -1 and R=-R.
+            t_1 = U[:, -1]
+            t_2 = -U[:, -1]
+            R_1 = U @ W @ Vt
+            R_2 = U @ W.T @ Vt
+            cam_poses = [
+                np.hstack([R_1, t_1[:, None]]),
+                np.hstack([R_1, t_2[:, None]]),
+                np.hstack([R_2, t_1[:, None]]),
+                np.hstack([R_2, t_2[:, None]]),
+            ]
+            # INFO: Now we find the *correct pose* using the Cheirality condition: the
+            # point X st \hat{x}=KX must lie in front of both cameras. To do so, we
+            # triangulate the point X from both candidate poses using **linear least
+            # squares**. Then we can just check the sign of Z in the camera frame wrt to
+            # its center.
+            # So X is in front iff: r_3(X-C)>0 where r_3 is the third column of the
+            # rotation matrix (z-axis of the camera).
+            # WARN: Since all triangulated points won't satisfy this condition due to
+            # noise in the correspondances, we simply take the best pose by majority
+            # voting.
+            # NOTE: To triangulate all points, we can solve the following homogeneous
+            # linear system of equations: AX=0, where X is the matrix of row vector
+            # points in homogeneous coordinates, and A is the matrix of stacked cross
+            # product vectors such that AX=0 <=> x \times PX = 0. This is the cross
+            # product between the observed image points and the projected points, which
+            # must be 0 to indicate that both are vectors that lie in the same
+            # direction, since perspective projection only matches observations up to
+            # scale. We then avoid the trivial solution x=0 by minimizing ||AX|| such
+            # that ||X||=1 via SVD:
+            X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
+            X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
+            best_cam_pose, largest_vote = None, 0
+            P1 = self.K @ np.hstack([np.eye(3), np.zeros((3, 1))])
+            for pose_candidate in cam_poses:
+                if np.linalg.det(pose_candidate[:, :3]) == -1:
+                    print("WARN: det(R)=-1, correcting")
+                    pose_candidate[:, :3] = -pose_candidate[:, :3]
+                    pose_candidate[:, -1] = -pose_candidate[:, -1]
+                P2 = self.K @ pose_candidate
+                inliers = inlier_observations[i]
+                triangulated_pts = np.zeros((inliers.sum(), 3))
+                nb_pts_in_front = 0
+                for j, ((u1, v1), (u2, v2)) in enumerate(
+                    zip(X_a[inliers], X_b[inliers])
+                ):
+                    A = np.array(
+                        [
+                            u1 * P2[2] - P2[0],
+                            v1 * P2[2] - P2[1],
+                            u2 * P2[2] - P2[0],
+                            v2 * P2[2] - P2[1],
+                        ]
+                    )
+                    _, _, Vh = np.linalg.svd(A)
+                    x_star = Vh[-1, :]  # Last row of V^T is the last column of V
+                    x_star /= x_star[-1]  # Divide by w for perspective projection
+                    triangulated_pts[j] = x_star[:3]
+                    if pose_candidate[:, 2] @ (x_star[:3] - pose_candidate[:3, -1]) > 0:
+                        nb_pts_in_front += 1
+                if nb_pts_in_front > largest_vote:
+                    best_cam_pose = pose_candidate
+                    largest_vote = nb_pts_in_front
+            if best_cam_pose is None:
+                raise ValueError("Could not find a camera pose for camera B!")
+            f_tpl.cam_pose_a = P1
+            f_tpl.cam_pose_b = best_cam_pose
 
 
 class BundleAdjustment:
@@ -310,25 +392,33 @@ def extract_and_match(
     # RANSAC and the Fundamental matrix, ie if x'TFx ~= 0 the match is good, otherwise
     # it's an outlier.
     ransac = RANSAC(frame_tuples)
-    inliers = ransac.filter()
+    inliers: List[np.ndarray] = ransac.filter()
     if debug:
         ransac.draw_matches()
     assert all(
         [isinstance(f_tpl.fundamental_matrix, np.ndarray) for f_tpl in frame_tuples]
     ), "Fundamental matrix not computed for all frames during RANSAC"
 
-    # INFO: Stage 4: Camera pose prediction
+    # INFO: Stage 4: Camera pose prediction and point triangulation
     if intrinsics_path is None:
-        raise NotImplementedError(
-            "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
-        )
+        K = np.random.rand(3, 3)
+        # raise NotImplementedError(
+        #     "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
+        # )
     else:
         K = np.load(intrinsics_path)
 
-    poses = PosePredictor(frame_tuples, K).fit(inliers)
-
-    # INFO: Stage 5: Check for Cheirality condition using Triangulation
-    _ = Triangulator().triangulate()
+    pose_predictor = PosePredictor(frame_tuples, K)
+    pose_predictor.fit(inliers)
+    # if debug:
+    #     pose_predictor.draw_triangulation()
+    assert all(
+        [
+            isinstance(f_tpl.cam_pose_a, np.ndarray)
+            and isinstance(f_tpl.cam_pose_b, np.ndarray)
+            for f_tpl in frame_tuples
+        ]
+    ), "Camera pose not computed for all frames"
 
     # INFO: Stage 6: Bundle adjustment
     _ = BundleAdjustment().adjust()
