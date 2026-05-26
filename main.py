@@ -1,4 +1,5 @@
 import os
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
@@ -73,6 +74,8 @@ class RANSAC:
         # planes. F gives us the epipolar constraint in the form (x_{i}^{\prime})^T F x_i = 0
         assert len(kp1.shape) == 2 and kp1.shape[1] == 2
         assert len(kp2.shape) == 2 and kp2.shape[1] == 2
+        assert kp1.shape[0] == kp2.shape[0], "Number of keypoints must match"
+        assert kp1.shape[0] >= 8, "Number of keypoints must be 8 minimum"
         # TODO: Hartley normalization. This may incur very poor performance due to huge
         # dot products with large (u,v) coordinates.
         A = []
@@ -116,16 +119,27 @@ class RANSAC:
             X_b = np.vstack(
                 [np.array(f.pt) for f in f_tuple.frame_b_features.keypoints]
             )
+            # Filter out keypoints to only keep matches:
+            X_a = X_a[[m.queryIdx for m in f_tuple.frame_a_to_b_matches]]
+            X_b = X_b[[m.trainIdx for m in f_tuple.frame_a_to_b_matches]]
             assert X_a.shape == X_b.shape
             n_pts = X_a.shape[0]
+            print(
+                f"Frame tuple ({f_tuple.frame_a_id},{f_tuple.frame_b_id}) has {n_pts} matches"
+            )
+            if n_pts < 8:
+                warnings.warn(
+                    f"Frame tuple ({f_tuple.frame_a_id},{f_tuple.frame_b_id}) does not have enough features!"
+                )
+                continue
             X_a_homo = np.concatenate([X_a, np.ones((n_pts, 1))], axis=1)
             X_b_homo = np.concatenate([X_b, np.ones((n_pts, 1))], axis=1)
             pbar = tqdm(range(self.max_iter), desc="Finding inliers with RANSAC...")
             for _ in pbar:
                 # 1. Select hypothetical outliers
-                # idx = np.random.permutation(n_pts)[:8]
                 idx = np.random.choice(n_pts, 8, replace=False)
                 x_a, x_b = X_a[idx], X_b[idx]
+                assert x_a.shape[0] == x_b.shape[0] == 8, "Did not sample 8 matches"
                 # 2. Fit a model to these
                 try:
                     F = self._compute_fundamental_matrix(x_a, x_b)
@@ -139,7 +153,7 @@ class RANSAC:
                 this_inliers = err < self.threshold
                 # 4. The model is reasonably good if sufficiently many points are
                 # classified as part of the consensus set.
-                if this_inliers.sum() < self.consensus_min:
+                if this_inliers.sum() < max(8, self.consensus_min):
                     continue
                 this_err = err[this_inliers].mean()
                 pbar.set_postfix(
