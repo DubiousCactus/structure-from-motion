@@ -1,5 +1,5 @@
 # SfM from scratch
-My goal with this project is to strength my knowledge of 3D computer vision and finally
+My goal with this project is to strengthen my knowledge of 3D computer vision and finally
 understand all about SLAM, SfM, and AR. I started this journey a long time ago, but
 things kept getting in the way and I lacked the mathematical foundations to fully grasp
 the concepts. I'm now coming back to it with years of computer vision, ML, and graphics
