@@ -49,6 +49,8 @@ class FrameTuple:
     essential_matrix: Optional[np.ndarray] = None
     cam_pose_a: Optional[np.ndarray] = None
     cam_pose_b: Optional[np.ndarray] = None
+    inliers: Optional[int] = 0
+    triangulated_pts: Optional[np.ndarray] = None
 
 
 class RANSAC:
@@ -173,9 +175,12 @@ class RANSAC:
         return self.frame_inliers
 
     def draw_matches(self):
+        i = 0
         for f, inliers in zip(self.frame_tuples, self.frame_inliers):
             if inliers is None:
                 continue
+            if i == 2:
+                break
             matches = f.frame_a_to_b_matches
 
             img1 = cv.imread(f.frame_a_features.img_path, cv.IMREAD_GRAYSCALE)
@@ -208,6 +213,7 @@ class RANSAC:
             plt.imshow(cv.cvtColor(img, cv.COLOR_BGR2RGB))
             plt.axis("off")
             plt.show()
+            i += 1
 
 
 class PosePredictor:
@@ -278,7 +284,12 @@ class PosePredictor:
             # that ||X||=1 via SVD:
             X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
             X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
+            # Filter out keypoints to only keep matches:
+            X_a = X_a[[m.queryIdx for m in f_tpl.frame_a_to_b_matches]]
+            X_b = X_b[[m.trainIdx for m in f_tpl.frame_a_to_b_matches]]
+            assert X_a.shape == X_b.shape
             best_cam_pose, largest_vote = None, 0
+            best_triangulated_pts = None
             P1 = self.K @ np.hstack([np.eye(3), np.zeros((3, 1))])
             for pose_candidate in cam_poses:
                 if np.linalg.det(pose_candidate[:, :3]) == -1:
@@ -304,15 +315,118 @@ class PosePredictor:
                     x_star = Vh[-1, :]  # Last row of V^T is the last column of V
                     x_star /= x_star[-1]  # Divide by w for perspective projection
                     triangulated_pts[j] = x_star[:3]
-                    if pose_candidate[:, 2] @ (x_star[:3] - pose_candidate[:3, -1]) > 0:
+                    if pose_candidate[:, 2] @ (x_star[:3] - pose_candidate[:, 3]) > 0:
                         nb_pts_in_front += 1
                 if nb_pts_in_front > largest_vote:
                     best_cam_pose = pose_candidate
                     largest_vote = nb_pts_in_front
+                    best_triangulated_pts = triangulated_pts
             if best_cam_pose is None:
                 raise ValueError("Could not find a camera pose for camera B!")
             f_tpl.cam_pose_a = P1
             f_tpl.cam_pose_b = best_cam_pose
+            f_tpl.inliers = inlier_observations[i].sum()
+            f_tpl.triangulated_pts = best_triangulated_pts
+
+    def _draw_camera_frustum(self, ax, center, R, d, w, h, color, label):
+        x_axis = R[0, :]
+        y_axis = R[1, :]
+        z_axis = R[2, :]
+
+        tl = center + d * z_axis - w * x_axis - h * y_axis
+        tr = center + d * z_axis + w * x_axis - h * y_axis
+        bl = center + d * z_axis - w * x_axis + h * y_axis
+        br = center + d * z_axis + w * x_axis + h * y_axis
+
+        for corner in [tl, tr, bl, br]:
+            ax.plot(
+                [center[0], corner[0]],
+                [center[1], corner[1]],
+                [center[2], corner[2]],
+                color=color,
+            )
+
+        rect = np.array([tl, tr, br, bl, tl])
+        ax.plot(rect[:, 0], rect[:, 1], rect[:, 2], color=color)
+
+        forward = center + d * 1.5 * z_axis
+        ax.plot(
+            [center[0], forward[0]],
+            [center[1], forward[1]],
+            [center[2], forward[2]],
+            color=color,
+            linestyle="--",
+            linewidth=0.5,
+        )
+
+        ax.scatter(
+            [center[0]], [center[1]], [center[2]], color=color, s=50, label=label
+        )
+
+    def draw_triangulation(self):
+        # Draw a 3D plot of the triangulated points and of the camera frustums, given
+        # the camera poses
+        for f_tpl in self.frame_tuples:
+            assert f_tpl.inliers is not None
+            if f_tpl.inliers < 30:
+                continue
+            cam_pose_a = self.frame_tuples[-1].cam_pose_a
+            cam_pose_b = self.frame_tuples[-1].cam_pose_b
+
+            pts = f_tpl.triangulated_pts
+            assert pts is not None
+            print(f"Drawing {pts.shape[0]} points")
+            print(pts)
+            center = pts.mean(axis=0)
+            scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
+            if scale == 0:
+                scale = 1.0
+            frustum_d = scale * 0.15
+            frustum_w = scale * 0.1
+            frustum_h = scale * 0.07
+
+            fig = plt.figure(figsize=(12, 10))
+            ax = fig.add_subplot(111, projection="3d")
+            ax.scatter(
+                pts[:, 0],
+                pts[:, 1],
+                pts[:, 2],
+                s=4,
+                c="blue",
+                alpha=0.6,
+                label="Points",
+            )
+
+            R_b = cam_pose_b[:, :3]
+            t_b = cam_pose_b[:, 3]
+
+            self._draw_camera_frustum(
+                ax,
+                np.zeros(3),
+                np.eye(3),
+                frustum_d,
+                frustum_w,
+                frustum_h,
+                "red",
+                "Camera A",
+            )
+            self._draw_camera_frustum(
+                ax,
+                t_b,
+                R_b,
+                frustum_d,
+                frustum_w,
+                frustum_h,
+                "green",
+                "Camera B",
+            )
+
+            ax.set_xlabel("X")
+            ax.set_ylabel("Y")
+            ax.set_zlabel("Z")
+            ax.set_title("Triangulated 3D Points and Camera Frustums")
+            ax.legend()
+            plt.show()
 
 
 class BundleAdjustment:
@@ -378,28 +492,28 @@ def extract_and_match(
                 good_matches.append(m)
         frame_tuples.append(FrameTuple(i - 1, i, f1, f2, good_matches))
 
-        if debug and i < 10:
-            # Need to draw only good matches, so create a mask
-            matchesMask = [[0, 0] for i in range(len(matches))]
-
-            # ratio test as per Lowe's paper
-            for j, (m, n) in enumerate(matches):
-                if m.distance < 0.7 * n.distance:
-                    matchesMask[j] = [1, 0]
-
-            draw_params = dict(
-                matchColor=(0, 255, 0),
-                singlePointColor=(255, 0, 0),
-                matchesMask=matchesMask,
-                flags=cv.DrawMatchesFlags_DEFAULT,
-            )
-            img1 = cv.imread(f1.img_path, cv.IMREAD_GRAYSCALE)
-            img2 = cv.imread(f2.img_path, cv.IMREAD_GRAYSCALE)
-            img3 = cv.drawMatchesKnn(
-                img1, f1.keypoints, img2, f2.keypoints, matches, None, **draw_params
-            )
-            plt.imshow(img3)
-            plt.show()
+        # if debug and i < 10:
+        #     # Need to draw only good matches, so create a mask
+        #     matchesMask = [[0, 0] for i in range(len(matches))]
+        #
+        #     # ratio test as per Lowe's paper
+        #     for j, (m, n) in enumerate(matches):
+        #         if m.distance < 0.6 * n.distance:
+        #             matchesMask[j] = [1, 0]
+        #
+        #     draw_params = dict(
+        #         matchColor=(0, 255, 0),
+        #         singlePointColor=(255, 0, 0),
+        #         matchesMask=matchesMask,
+        #         flags=cv.DrawMatchesFlags_DEFAULT,
+        #     )
+        #     img1 = cv.imread(f1.img_path, cv.IMREAD_GRAYSCALE)
+        #     img2 = cv.imread(f2.img_path, cv.IMREAD_GRAYSCALE)
+        #     img3 = cv.drawMatchesKnn(
+        #         img1, f1.keypoints, img2, f2.keypoints, matches, None, **draw_params
+        #     )
+        #     plt.imshow(img3)
+        #     plt.show()
 
     # INFO: Stage 3: RANSAC outlier removal via the epipolar constraint.
     # Now that we've got good candidate matches, we can start filtering them with
@@ -415,17 +529,16 @@ def extract_and_match(
 
     # INFO: Stage 4: Camera pose prediction and point triangulation
     if intrinsics_path is None:
-        K = np.random.rand(3, 3)
-        # raise NotImplementedError(
-        #     "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
-        # )
+        raise NotImplementedError(
+            "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
+        )
     else:
         K = np.load(intrinsics_path)
 
     pose_predictor = PosePredictor(frame_tuples, K)
     pose_predictor.fit(inliers)
-    # if debug:
-    #     pose_predictor.draw_triangulation()
+    if debug:
+        pose_predictor.draw_triangulation()
     assert all(
         [
             isinstance(f_tpl.cam_pose_a, np.ndarray)
