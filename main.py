@@ -357,10 +357,11 @@ class PosePredictor:
                 [center[1], corner[1]],
                 [center[2], corner[2]],
                 color=color,
+                alpha=0.5,
             )
 
         rect = np.array([tl, tr, br, bl, tl])
-        ax.plot(rect[:, 0], rect[:, 1], rect[:, 2], color=color)
+        ax.plot(rect[:, 0], rect[:, 1], rect[:, 2], color=color, alpha=0.8)
 
         forward = center + d * 1.5 * z_axis
         ax.plot(
@@ -377,6 +378,75 @@ class PosePredictor:
         )
 
     def draw_triangulation(self):
+        for f_tpl in self.frame_tuples:
+            assert f_tpl.inliers is not None
+            if f_tpl.inliers < 30:
+                continue
+            cam_pose_a = f_tpl.cam_pose_a
+            cam_pose_b = f_tpl.cam_pose_b
+
+            pts = f_tpl.triangulated_pts
+            assert pts is not None
+            print(f"Drawing {pts.shape[0]} points")
+            print(pts)
+            fig = plt.figure(figsize=(12, 10))
+            ax = fig.add_subplot(111)
+            ax.scatter(
+                pts[:, 0],
+                pts[:, 2],
+                s=4,
+                c="blue",
+                alpha=0.6,
+                label="Points",
+            )
+
+            R_a = np.eye(3)
+            t_a = np.zeros(3)
+            R_b = cam_pose_b[:, :3]
+            t_b = cam_pose_b[:, 3]
+
+            scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
+            arrow_len = max(scale * 0.1, 1.0)
+            head_w = arrow_len * 0.1
+            head_l = arrow_len * 0.15
+
+            # Camera A at origin
+            ax.scatter(t_a[0], t_a[2], c="red", s=50, label="Camera A")
+            fwd_a = R_a[2, :]  # z-axis
+            ax.arrow(
+                t_a[0],
+                t_a[2],
+                fwd_a[0] * arrow_len,
+                fwd_a[2] * arrow_len,
+                head_width=head_w,
+                head_length=head_l,
+                fc="red",
+                ec="red",
+            )
+
+            # Camera B
+            ax.scatter(t_b[0], t_b[2], c="green", s=50, label="Camera B")
+            fwd_b = R_b[2, :]  # z-axis in camera B's frame
+            ax.arrow(
+                t_b[0],
+                t_b[2],
+                fwd_b[0] * arrow_len,
+                fwd_b[2] * arrow_len,
+                head_width=head_w,
+                head_length=head_l,
+                fc="green",
+                ec="green",
+            )
+
+            ax.set_xlabel("X")
+            ax.set_ylabel("Z")
+            ax.set_title(
+                "Triangulated 3D Points and Camera Frustums (seen from Y axis)"
+            )
+            ax.legend()
+            plt.show()
+
+    def draw_triangulation_3D(self):
         # Draw a 3D plot of the triangulated points and of the camera frustums, given
         # the camera poses
         for f_tpl in self.frame_tuples:
@@ -394,6 +464,7 @@ class PosePredictor:
             scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
             if scale == 0:
                 scale = 1.0
+            
             # Adjusted scale to be more robust
             frustum_d = scale * 0.15
             frustum_w = scale * 0.05
@@ -552,7 +623,7 @@ def extract_and_match(
     pose_predictor = PosePredictor(frame_tuples, K)
     pose_predictor.fit(inliers)
     if debug:
-        pose_predictor.draw_triangulation()
+        pose_predictor.draw_triangulation_3D()
     assert all(
         [
             isinstance(f_tpl.cam_pose_a, np.ndarray)
