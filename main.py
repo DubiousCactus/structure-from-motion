@@ -313,7 +313,8 @@ class PosePredictor:
                     )
                     _, _, Vh = np.linalg.svd(A)
                     x_star = Vh[-1, :]  # Last row of V^T is the last column of V
-                    x_star /= x_star[-1]  # Divide by w for perspective projection
+                    if x_star[-1] != 0:
+                        x_star /= x_star[-1]  # Divide by w for perspective projection
                     triangulated_pts[j] = x_star[:3]
                     if pose_candidate[:, 2] @ (x_star[:3] - pose_candidate[:, 3]) > 0:
                         nb_pts_in_front += 1
