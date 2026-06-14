@@ -305,8 +305,8 @@ class PosePredictor:
                 ):
                     A = np.array(
                         [
-                            u1 * P2[2] - P2[0],
-                            v1 * P2[2] - P2[1],
+                            u1 * P1[2] - P1[0],
+                            v1 * P1[2] - P1[1],
                             u2 * P2[2] - P2[0],
                             v2 * P2[2] - P2[1],
                         ]
