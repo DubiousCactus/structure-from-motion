@@ -383,8 +383,8 @@ class PosePredictor:
             assert f_tpl.inliers is not None
             if f_tpl.inliers < 30:
                 continue
-            cam_pose_a = self.frame_tuples[-1].cam_pose_a
-            cam_pose_b = self.frame_tuples[-1].cam_pose_b
+            cam_pose_a = f_tpl.cam_pose_a
+            cam_pose_b = f_tpl.cam_pose_b
 
             pts = f_tpl.triangulated_pts
             assert pts is not None
@@ -394,9 +394,10 @@ class PosePredictor:
             scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
             if scale == 0:
                 scale = 1.0
+            # Adjusted scale to be more robust
             frustum_d = scale * 0.15
-            frustum_w = scale * 0.1
-            frustum_h = scale * 0.07
+            frustum_w = scale * 0.05
+            frustum_h = scale * 0.04
 
             fig = plt.figure(figsize=(12, 10))
             ax = fig.add_subplot(111, projection="3d")
