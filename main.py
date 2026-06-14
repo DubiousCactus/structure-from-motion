@@ -316,7 +316,19 @@ class PosePredictor:
                     if x_star[-1] != 0:
                         x_star /= x_star[-1]  # Divide by w for perspective projection
                     triangulated_pts[j] = x_star[:3]
-                    if pose_candidate[:, 2] @ (x_star[:3] - pose_candidate[:, 3]) > 0:
+
+                    # Cheirality check:
+                    # In camera A's frame (origin): Z > 0
+                    in_front_a = x_star[2] > 0
+
+                    # In camera B's frame: Z_c > 0 where X_c = R_b * X_w + t_b
+                    # Z_c is the 3rd row of (R_b * X_w + t_b)
+                    R_b = pose_candidate[:, :3]
+                    t_b = pose_candidate[:, 3]
+                    z_c = R_b[2, :] @ x_star[:3] + t_b[2]
+                    in_front_b = z_c > 0
+
+                    if in_front_a and in_front_b:
                         nb_pts_in_front += 1
                 if nb_pts_in_front > largest_vote:
                     best_cam_pose = pose_candidate
