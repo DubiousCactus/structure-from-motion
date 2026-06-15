@@ -250,13 +250,9 @@ class PosePredictor:
             E = self._compute_essential_matrix(f_tpl.fundamental_matrix)
             f_tpl.essential_matrix = E
             U, S_diag, Vt = np.linalg.svd(E)
-            # Ensure U and Vt are proper rotation matrices (det=1)
-            if np.linalg.det(U) < 0:
-                U[:, -1] *= -1
-            if np.linalg.det(Vt) < 0:
-                Vt[-1, :] *= -1
-
             # We have four potential solutions: ([R_1|t_1], [R_1|t_2], [R_2|t_1], [R_2|t_2])
+            # WARN: det(R)=1. If that is not the case, i.e. det(R)=-1, we must corect by
+            # setting t = -1 and R=-R.
             t_1 = U[:, -1]
             t_2 = -U[:, -1]
             R_1 = U @ W @ Vt
@@ -297,6 +293,10 @@ class PosePredictor:
             pose_a = np.hstack([np.eye(3), np.zeros((3, 1))])
             P1 = self.K @ pose_a
             for pose_candidate in cam_poses:
+                if np.linalg.det(pose_candidate[:, :3]) == -1:
+                    print("WARN: det(R)=-1, correcting")
+                    pose_candidate[:, :3] = -pose_candidate[:, :3]
+                    pose_candidate[:, -1] = -pose_candidate[:, -1]
                 P2 = self.K @ pose_candidate
                 inliers = inlier_observations[i]
                 triangulated_pts = np.zeros((inliers.sum(), 3))
