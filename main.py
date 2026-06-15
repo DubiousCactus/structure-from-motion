@@ -324,12 +324,9 @@ class PosePredictor:
                     # In camera A's frame (origin): Z > 0
                     in_front_a = x_star[2] > 0
 
-                    # In camera B's frame: Z_c > 0 where X_c = R_b * X_w + t_b
-                    # Z_c is the 3rd row of (R_b * X_w + t_b)
+                    # In camera B's frame: R_3(X-C) > 0
                     R_b = pose_candidate[:, :3]
                     t_b = pose_candidate[:, 3]
-                    # z_c = R_b[2, :] @ x_star[:3] + t_b[2]
-                    # in_front_b = z_c > 0
                     in_front_b = (R_b[2, :] @ (x_star[:3] - t_b)) > 0
 
                     if in_front_a and in_front_b:
