@@ -11,3 +11,8 @@ dependencies = [
     "tqdm>=4.67.3",
     "typer>=0.24.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+]
