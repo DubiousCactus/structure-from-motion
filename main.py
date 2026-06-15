@@ -7,6 +7,7 @@ import cv2 as cv
 import numpy as np
 import typer
 from matplotlib import pyplot as plt
+from scipy.optimize import least_squares
 from tqdm import tqdm
 
 app = typer.Typer()
@@ -50,6 +51,7 @@ class FrameTuple:
     cam_pose_a: Optional[np.ndarray] = None
     cam_pose_b: Optional[np.ndarray] = None
     inliers: Optional[int] = 0
+    triangulated_pts_linear: Optional[np.ndarray] = None
     triangulated_pts: Optional[np.ndarray] = None
 
 
@@ -337,10 +339,35 @@ class PosePredictor:
                     best_triangulated_pts = triangulated_pts
             if best_cam_pose is None:
                 raise ValueError("Could not find a camera pose for camera B!")
+
+            # Refine 3D points via non-linear triangulation
+            def reproj_err(x: np.ndarray, *args, **kwargs) -> np.ndarray:
+                """
+                Returns the vector of residuals.
+                """
+                x_homo = np.concatenate([x, np.ones((x.shape[0], 1))], axis=1)
+                u1, v1 = X_a[inliers]
+                u2, v2 = X_b[inliers]
+                assert u1.shape[0] == x.shape[0]
+                assert u2.shape[0] == x.shape[0]
+                return np.ndarray(
+                    [
+                        u1 - (P1[0] * x_homo) / (P1[2] * x),
+                        v1 - (P1[1] * x_homo) / (P1[2] * x),
+                        u2 - (P2[0] * x_homo) / (P2[2] * x),
+                        v2 - (P2[1] * x_homo) / (P2[2] * x),
+                    ]
+                )
+
+            refined_pts = least_squares(reproj_err, best_triangulated_pts, method="lm")
+            # TODO: We need to rethink how frame pairs are stored! For a sequential
+            # approach, I want a linked list of frames where node_a -> node_b have
+            # keypoints, and I can init with node_a.pose to find node_b.pose.
             f_tpl.cam_pose_a = pose_a
             f_tpl.cam_pose_b = best_cam_pose
             f_tpl.inliers = inlier_observations[i].sum()
-            f_tpl.triangulated_pts = best_triangulated_pts
+            f_tpl.triangulated_pts_linear = best_triangulated_pts
+            f_tpl.triangulated_pts = refined_pts
 
     def _draw_camera_frustum(self, ax, center, R, d, w, h, color, label):
         x_axis = R[0, :]
