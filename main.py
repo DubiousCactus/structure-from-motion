@@ -179,7 +179,7 @@ class RANSAC:
         for f, inliers in zip(self.frame_tuples, self.frame_inliers):
             if inliers is None:
                 continue
-            if i == 2:
+            if i == 1:
                 break
             matches = f.frame_a_to_b_matches
 
@@ -294,7 +294,8 @@ class PosePredictor:
             assert X_a.shape == X_b.shape
             best_cam_pose, largest_vote = None, 0
             best_triangulated_pts = None
-            P1 = self.K @ np.hstack([np.eye(3), np.zeros((3, 1))])
+            pose_a = np.hstack([np.eye(3), np.zeros((3, 1))])
+            P1 = self.K @ pose_a
             for pose_candidate in cam_poses:
                 P2 = self.K @ pose_candidate
                 inliers = inlier_observations[i]
@@ -303,6 +304,8 @@ class PosePredictor:
                 for j, ((u1, v1), (u2, v2)) in enumerate(
                     zip(X_a[inliers], X_b[inliers])
                 ):
+                    # A is the matrix of stacked cross-product vectors such that
+                    # AX=0 <=> x \times PX = 0
                     A = np.array(
                         [
                             u1 * P1[2] - P1[0],
@@ -325,8 +328,9 @@ class PosePredictor:
                     # Z_c is the 3rd row of (R_b * X_w + t_b)
                     R_b = pose_candidate[:, :3]
                     t_b = pose_candidate[:, 3]
-                    z_c = R_b[2, :] @ x_star[:3] + t_b[2]
-                    in_front_b = z_c > 0
+                    # z_c = R_b[2, :] @ x_star[:3] + t_b[2]
+                    # in_front_b = z_c > 0
+                    in_front_b = (R_b[2, :] @ (x_star[:3] - t_b)) > 0
 
                     if in_front_a and in_front_b:
                         nb_pts_in_front += 1
@@ -336,7 +340,7 @@ class PosePredictor:
                     best_triangulated_pts = triangulated_pts
             if best_cam_pose is None:
                 raise ValueError("Could not find a camera pose for camera B!")
-            f_tpl.cam_pose_a = P1
+            f_tpl.cam_pose_a = pose_a
             f_tpl.cam_pose_b = best_cam_pose
             f_tpl.inliers = inlier_observations[i].sum()
             f_tpl.triangulated_pts = best_triangulated_pts
@@ -400,14 +404,14 @@ class PosePredictor:
                 label="Points",
             )
 
-            R_a = np.eye(3)
-            t_a = np.zeros(3)
+            R_a = cam_pose_a[:, :3]
+            t_a = cam_pose_a[:, 3]
             R_b = cam_pose_b[:, :3]
             t_b = cam_pose_b[:, 3]
 
             scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
             arrow_len = max(scale * 0.1, 1.0)
-            head_w = arrow_len * 0.1
+            head_w = arrow_len * 0.01
             head_l = arrow_len * 0.15
 
             # Camera A at origin
@@ -464,7 +468,7 @@ class PosePredictor:
             scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
             if scale == 0:
                 scale = 1.0
-            
+
             # Adjusted scale to be more robust
             frustum_d = scale * 0.15
             frustum_w = scale * 0.05
@@ -482,13 +486,17 @@ class PosePredictor:
                 label="Points",
             )
 
+            R_a = cam_pose_a[:, :3]
+            t_a = cam_pose_a[:, 3]
             R_b = cam_pose_b[:, :3]
             t_b = cam_pose_b[:, 3]
+            print(f"Cam pose A: R={R_a}, t={t_a}")
+            print(f"Cam pose B: R={R_b}, t={t_b}")
 
             self._draw_camera_frustum(
                 ax,
-                np.zeros(3),
-                np.eye(3),
+                t_a,
+                R_a,
                 frustum_d,
                 frustum_w,
                 frustum_h,
@@ -618,7 +626,7 @@ def extract_and_match(
             "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
         )
     else:
-        K = np.load(intrinsics_path)
+        K = np.load(intrinsics_path)[0]
 
     pose_predictor = PosePredictor(frame_tuples, K)
     pose_predictor.fit(inliers)
