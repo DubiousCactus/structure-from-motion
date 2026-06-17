@@ -295,7 +295,7 @@ class PosePredictor:
             pose_a = np.hstack([np.eye(3), np.zeros((3, 1))])
             P1 = self.K @ pose_a
             for pose_candidate in cam_poses:
-                if np.linalg.det(pose_candidate[:, :3]) == -1:
+                if np.linalg.det(pose_candidate[:, :3]) < 0:
                     print("WARN: det(R)=-1, correcting")
                     pose_candidate[:, :3] = -pose_candidate[:, :3]
                     pose_candidate[:, -1] = -pose_candidate[:, -1]
@@ -322,14 +322,26 @@ class PosePredictor:
                         x_star /= x_star[-1]  # Divide by w for perspective projection
                     triangulated_pts[j] = x_star[:3]
 
-                    # Cheirality check:
-                    # In camera A's frame (origin): Z > 0
+                    # Cheirality check: the 3D point must lie in front of both
+                    # cameras, i.e. have positive depth in each camera frame.
+                    # Camera A sits at the world origin (pose_a = [I|0]), so its
+                    # depth is just X[2].
                     in_front_a = x_star[2] > 0
 
-                    # In camera B's frame: R_3(X-C) > 0
+                    # Camera B has pose [R_b|t_b], meaning a world point X maps to
+                    # the camera-B frame as x_b = R_b X + t_b. The depth of X in
+                    # B's frame is therefore the third component: z_b = r_3 . X +
+                    # t_b[2], where r_3 is the third row of R_b (B's optical axis).
+                    # NOTE: t_b is NOT the camera center. The camera center in
+                    # world coords is C = -R_b^T t_b (obtained by solving R_b C +
+                    # t_b = 0). The condition r_3.(X - C) > 0 from the literature
+                    # is algebraically equivalent to r_3.X + t_b[2] > 0, since
+                    # r_3.(X - C) = r_3.X - r_3.C = r_3.X - r_3.(-R_b^T t_b) =
+                    # r_3.X + (r_3 R_b^T) t_b = r_3.X + t_b[2] (because r_3 R_b^T
+                    # picks out the third row of R_b R_b^T = I, i.e. e_3^T).
                     R_b = pose_candidate[:, :3]
                     t_b = pose_candidate[:, 3]
-                    in_front_b = (R_b[2, :] @ (x_star[:3] - t_b)) > 0
+                    in_front_b = (R_b[2, :] @ x_star[:3] + t_b[2]) > 0
 
                     if in_front_a and in_front_b:
                         nb_pts_in_front += 1
@@ -339,27 +351,46 @@ class PosePredictor:
                     best_triangulated_pts = triangulated_pts
             if best_cam_pose is None:
                 raise ValueError("Could not find a camera pose for camera B!")
+            if best_triangulated_pts is None:
+                raise ValueError("Could not triangulate points!")
+            P2 = self.K @ best_cam_pose
 
             # Refine 3D points via non-linear triangulation
             def reproj_err(x: np.ndarray, *args, **kwargs) -> np.ndarray:
                 """
-                Returns the vector of residuals.
+                Args:
+                    x (np.ndarray): flattened array of shape (N*3) for N points.
+                Returns the flattened vector of residuals.
                 """
-                x_homo = np.concatenate([x, np.ones((x.shape[0], 1))], axis=1)
-                u1, v1 = X_a[inliers]
-                u2, v2 = X_b[inliers]
+                n_pts = x.shape[0] // 3
+                x = x.reshape(n_pts, 3)
+                x_homo = np.concatenate([x, np.ones((n_pts, 1))], axis=1)
+                u1, v1 = X_a[inliers].T
+                u2, v2 = X_b[inliers].T
                 assert u1.shape[0] == x.shape[0]
                 assert u2.shape[0] == x.shape[0]
-                return np.ndarray(
+                cam_a_proj = x_homo @ P1.T  # (N, 3)
+                cam_a_proj = (cam_a_proj / cam_a_proj[:, -1][:, None])[:, :2]
+                cam_b_proj = x_homo @ P2.T  # (N, 3)
+                cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
+                return np.stack(
                     [
-                        u1 - (P1[0] * x_homo) / (P1[2] * x),
-                        v1 - (P1[1] * x_homo) / (P1[2] * x),
-                        u2 - (P2[0] * x_homo) / (P2[2] * x),
-                        v2 - (P2[1] * x_homo) / (P2[2] * x),
-                    ]
-                )
+                        u1 - cam_a_proj[:, 0],
+                        v1 - cam_a_proj[:, 1],
+                        u2 - cam_b_proj[:, 0],
+                        v2 - cam_b_proj[:, 1],
+                    ],
+                    axis=1,
+                ).ravel()
 
-            refined_pts = least_squares(reproj_err, best_triangulated_pts, method="lm")
+            n_pts = best_triangulated_pts.shape[0]
+            refined_pts = least_squares(
+                reproj_err,
+                best_triangulated_pts.reshape(
+                    n_pts * 3,
+                ),
+                method="lm",
+            ).x.reshape(n_pts, 3)
             # TODO: We need to rethink how frame pairs are stored! For a sequential
             # approach, I want a linked list of frames where node_a -> node_b have
             # keypoints, and I can init with node_a.pose to find node_b.pose.
@@ -413,19 +444,29 @@ class PosePredictor:
             cam_pose_a = f_tpl.cam_pose_a
             cam_pose_b = f_tpl.cam_pose_b
 
+            pts_linear = f_tpl.triangulated_pts_linear
             pts = f_tpl.triangulated_pts
             assert pts is not None
             print(f"Drawing {pts.shape[0]} points")
             print(pts)
             fig = plt.figure(figsize=(12, 10))
             ax = fig.add_subplot(111)
+            if pts_linear is not None:
+                ax.scatter(
+                    pts_linear[:, 0],
+                    pts_linear[:, 2],
+                    s=4,
+                    c="orange",
+                    alpha=0.6,
+                    label="Linear triangulation",
+                )
             ax.scatter(
                 pts[:, 0],
                 pts[:, 2],
                 s=4,
                 c="blue",
                 alpha=0.6,
-                label="Points",
+                label="Non-linear triangulation",
             )
 
             R_a = cam_pose_a[:, :3]
@@ -484,6 +525,7 @@ class PosePredictor:
             cam_pose_a = f_tpl.cam_pose_a
             cam_pose_b = f_tpl.cam_pose_b
 
+            pts_linear = f_tpl.triangulated_pts_linear
             pts = f_tpl.triangulated_pts
             assert pts is not None
             print(f"Drawing {pts.shape[0]} points")
@@ -500,6 +542,16 @@ class PosePredictor:
 
             fig = plt.figure(figsize=(12, 10))
             ax = fig.add_subplot(111, projection="3d")
+            if pts_linear is not None:
+                ax.scatter(
+                    pts_linear[:, 0],
+                    pts_linear[:, 1],
+                    pts_linear[:, 2],
+                    s=4,
+                    c="orange",
+                    alpha=0.6,
+                    label="Linear triangulation",
+                )
             ax.scatter(
                 pts[:, 0],
                 pts[:, 1],
@@ -507,7 +559,7 @@ class PosePredictor:
                 s=4,
                 c="blue",
                 alpha=0.6,
-                label="Points",
+                label="Non-linear triangulation",
             )
 
             R_a = cam_pose_a[:, :3]
