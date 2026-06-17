@@ -358,6 +358,33 @@ $\mathbf{X} \in \mathbb{R}^{N\times 3}$.
 
 #### What is Perspective-n-Point (PnP)?
 
+Once we obtained 3D points for an image pair using triangulation and the cheirality
+condition, the pose that we obtain is only up to scale, i.e. $||t||=1$. The problem is
+that we would need to chain up the operation for each image pair to obtain all camera
+poses, but they wouldn't be in a global frame due to this scale ambiguity caused by the
+Essential matrix. Eventually, the scale ambiguity and pose estimate errors would
+accumulate and lead to bad drift.
+
+To remedy this, we instead solve the camera pose of each new image in the global frame
+using PnP. By anchoring each new camera into an already known 3D structure, we prevent
+drift and error accumulation (similar to loop closure in SLAM).
+
+Before applying PnP to optimize the global pose of each camera, we need to bootstrap the
+known 3D structure. This is the whole pipeline:
+1. Bootstrap with two frames:
+    - Essential matrix estimation
+    - Triangulation (DLT)
+    - Pose prediction
+2. For each new frame:
+    - Match features to the 3D point cloud via correspondances with
+   earlier frames
+    - Apply linear PnP for init (DLT triangulation implemented above)
+    - Refine with non-linear PnP
+    - Triangulate new points between i-1 and i
+    - Optionally, local bundle adjustment
+3. Global bundle adjustment
+
+
 #### What is bundle adjustment?
 
 
