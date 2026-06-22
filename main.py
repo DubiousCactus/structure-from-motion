@@ -1,7 +1,7 @@
 import os
 import warnings
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2 as cv
 import numpy as np
@@ -55,7 +55,14 @@ class FrameTuple:
     triangulated_pts: Optional[np.ndarray] = None
 
 
-class RANSAC:
+@dataclass
+class Structure:
+    points3D: np.ndarray  # List of homogeneous points
+    correspondences: Dict[Tuple[int, int], int]  # Dict of (frame_id, kp_id) -> point_id
+    poses: Dict[int, np.ndarray]  # Dict of frame_id -> [R|t] SO(3) pose
+
+
+class EpipolarRANSAC:
     def __init__(
         self,
         frame_tuples: List[FrameTuple],
@@ -218,7 +225,7 @@ class RANSAC:
             i += 1
 
 
-class PosePredictor:
+class StructureBootstrap:
     def __init__(self, frame_tuples: List[FrameTuple], K: np.ndarray) -> None:
         self.frame_tuples = frame_tuples
         assert K.shape == (3, 3)
@@ -232,9 +239,11 @@ class PosePredictor:
         K_rank2 = U @ np.diag(S) @ Vh
         return K_rank2
 
-    def fit(self, inlier_observations: List[np.ndarray]):
+    def init(self, inlier_observations: List[np.ndarray]) -> Structure:
         """
-        Fit camera poses to points observed in two images using the Essential matrix.
+        Bootstrap structure by predicting the pose of the first camera pair and
+        triangulating the first set of points.
+        The camera pose is estimated from the Essential matrix.
         """
         # First we define the W matrix which is useful for the essential matrix
         # decomposition, where E = SR, S=UZU^T and R=UWV^T or R=UW^TV^T, where t=U[:,
@@ -247,158 +256,182 @@ class PosePredictor:
             ]
         )
         assert len(inlier_observations) == len(self.frame_tuples)
-        for i, f_tpl in enumerate(self.frame_tuples):
-            assert f_tpl.fundamental_matrix is not None
-            E = self._compute_essential_matrix(f_tpl.fundamental_matrix)
-            f_tpl.essential_matrix = E
-            U, S_diag, Vt = np.linalg.svd(E)
-            # We have four potential solutions: ([R_1|t_1], [R_1|t_2], [R_2|t_1], [R_2|t_2])
-            # WARN: det(R)=1. If that is not the case, i.e. det(R)=-1, we must corect by
-            # setting t = -1 and R=-R.
-            t_1 = U[:, -1]
-            t_2 = -U[:, -1]
-            R_1 = U @ W @ Vt
-            R_2 = U @ W.T @ Vt
-            cam_poses = [
-                np.hstack([R_1, t_1[:, None]]),
-                np.hstack([R_1, t_2[:, None]]),
-                np.hstack([R_2, t_1[:, None]]),
-                np.hstack([R_2, t_2[:, None]]),
-            ]
-            # INFO: Now we find the *correct pose* using the Cheirality condition: the
-            # point X st \hat{x}=KX must lie in front of both cameras. To do so, we
-            # triangulate the point X from both candidate poses using **linear least
-            # squares**. Then we can just check the sign of Z in the camera frame wrt to
-            # its center.
-            # So X is in front iff: r_3(X-C)>0 where r_3 is the third column of the
-            # rotation matrix (z-axis of the camera).
-            # WARN: Since all triangulated points won't satisfy this condition due to
-            # noise in the correspondances, we simply take the best pose by majority
-            # voting.
-            # NOTE: To triangulate all points, we can solve the following homogeneous
-            # linear system of equations: AX=0, where X is the matrix of row vector
-            # points in homogeneous coordinates, and A is the matrix of stacked cross
-            # product vectors such that AX=0 <=> x \times PX = 0. This is the cross
-            # product between the observed image points and the projected points, which
-            # must be 0 to indicate that both are vectors that lie in the same
-            # direction, since perspective projection only matches observations up to
-            # scale. We then avoid the trivial solution x=0 by minimizing ||AX|| such
-            # that ||X||=1 via SVD:
-            X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
-            X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
-            # Filter out keypoints to only keep matches:
-            X_a = X_a[[m.queryIdx for m in f_tpl.frame_a_to_b_matches]]
-            X_b = X_b[[m.trainIdx for m in f_tpl.frame_a_to_b_matches]]
-            assert X_a.shape == X_b.shape
-            best_cam_pose, largest_vote = None, 0
-            best_triangulated_pts = None
-            pose_a = np.hstack([np.eye(3), np.zeros((3, 1))])
-            P1 = self.K @ pose_a
-            for pose_candidate in cam_poses:
-                if np.linalg.det(pose_candidate[:, :3]) < 0:
-                    print("WARN: det(R)=-1, correcting")
-                    pose_candidate[:, :3] = -pose_candidate[:, :3]
-                    pose_candidate[:, -1] = -pose_candidate[:, -1]
-                P2 = self.K @ pose_candidate
-                inliers = inlier_observations[i]
-                triangulated_pts = np.zeros((inliers.sum(), 3))
-                nb_pts_in_front = 0
-                for j, ((u1, v1), (u2, v2)) in enumerate(
-                    zip(X_a[inliers], X_b[inliers])
-                ):
-                    # A is the matrix of stacked cross-product vectors such that
-                    # AX=0 <=> x \times PX = 0
-                    A = np.array(
-                        [
-                            u1 * P1[2] - P1[0],
-                            v1 * P1[2] - P1[1],
-                            u2 * P2[2] - P2[0],
-                            v2 * P2[2] - P2[1],
-                        ]
-                    )
-                    _, _, Vh = np.linalg.svd(A)
-                    x_star = Vh[-1, :]  # Last row of V^T is the last column of V
-                    if x_star[-1] != 0:
-                        x_star /= x_star[-1]  # Divide by w for perspective projection
-                    triangulated_pts[j] = x_star[:3]
-
-                    # Cheirality check: the 3D point must lie in front of both
-                    # cameras, i.e. have positive depth in each camera frame.
-                    # Camera A sits at the world origin (pose_a = [I|0]), so its
-                    # depth is just X[2].
-                    in_front_a = x_star[2] > 0
-
-                    # Camera B has pose [R_b|t_b], meaning a world point X maps to
-                    # the camera-B frame as x_b = R_b X + t_b. The depth of X in
-                    # B's frame is therefore the third component: z_b = r_3 . X +
-                    # t_b[2], where r_3 is the third row of R_b (B's optical axis).
-                    # NOTE: t_b is NOT the camera center. The camera center in
-                    # world coords is C = -R_b^T t_b (obtained by solving R_b C +
-                    # t_b = 0). The condition r_3.(X - C) > 0 from the literature
-                    # is algebraically equivalent to r_3.X + t_b[2] > 0, since
-                    # r_3.(X - C) = r_3.X - r_3.C = r_3.X - r_3.(-R_b^T t_b) =
-                    # r_3.X + (r_3 R_b^T) t_b = r_3.X + t_b[2] (because r_3 R_b^T
-                    # picks out the third row of R_b R_b^T = I, i.e. e_3^T).
-                    R_b = pose_candidate[:, :3]
-                    t_b = pose_candidate[:, 3]
-                    in_front_b = (R_b[2, :] @ x_star[:3] + t_b[2]) > 0
-
-                    if in_front_a and in_front_b:
-                        nb_pts_in_front += 1
-                if nb_pts_in_front > largest_vote:
-                    best_cam_pose = pose_candidate
-                    largest_vote = nb_pts_in_front
-                    best_triangulated_pts = triangulated_pts
-            if best_cam_pose is None:
-                raise ValueError("Could not find a camera pose for camera B!")
-            if best_triangulated_pts is None:
-                raise ValueError("Could not triangulate points!")
-            P2 = self.K @ best_cam_pose
-
-            # Refine 3D points via non-linear triangulation
-            def reproj_err(x: np.ndarray, *args, **kwargs) -> np.ndarray:
-                """
-                Args:
-                    x (np.ndarray): flattened array of shape (N*3) for N points.
-                Returns the flattened vector of residuals.
-                """
-                n_pts = x.shape[0] // 3
-                x = x.reshape(n_pts, 3)
-                x_homo = np.concatenate([x, np.ones((n_pts, 1))], axis=1)
-                u1, v1 = X_a[inliers].T
-                u2, v2 = X_b[inliers].T
-                assert u1.shape[0] == x.shape[0]
-                assert u2.shape[0] == x.shape[0]
-                cam_a_proj = x_homo @ P1.T  # (N, 3)
-                cam_a_proj = (cam_a_proj / cam_a_proj[:, -1][:, None])[:, :2]
-                cam_b_proj = x_homo @ P2.T  # (N, 3)
-                cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
-                return np.stack(
+        # TODO: Find the optimal image pair for bootstraping, and only compute pose
+        # for it. For now we use the first image pair.
+        f_tpl = self.frame_tuples[0]
+        inliers = inlier_observations[0]
+        assert f_tpl.fundamental_matrix is not None
+        E = self._compute_essential_matrix(f_tpl.fundamental_matrix)
+        f_tpl.essential_matrix = E
+        U, S_diag, Vt = np.linalg.svd(E)
+        # We have four potential solutions: ([R_1|t_1], [R_1|t_2], [R_2|t_1], [R_2|t_2])
+        # WARN: det(R)=1. If that is not the case, i.e. det(R)=-1, we must corect by
+        # setting t = -1 and R=-R.
+        t_1 = U[:, -1]
+        t_2 = -U[:, -1]
+        R_1 = U @ W @ Vt
+        R_2 = U @ W.T @ Vt
+        cam_poses = [
+            np.hstack([R_1, t_1[:, None]]),
+            np.hstack([R_1, t_2[:, None]]),
+            np.hstack([R_2, t_1[:, None]]),
+            np.hstack([R_2, t_2[:, None]]),
+        ]
+        # INFO: Now we find the *correct pose* using the Cheirality condition: the
+        # point X st \hat{x}=KX must lie in front of both cameras. To do so, we
+        # triangulate the point X from both candidate poses using **linear least
+        # squares**. Then we can just check the sign of Z in the camera frame wrt to
+        # its center.
+        # So X is in front iff: r_3(X-C)>0 where r_3 is the third column of the
+        # rotation matrix (z-axis of the camera).
+        # WARN: Since all triangulated points won't satisfy this condition due to
+        # noise in the correspondances, we simply take the best pose by majority
+        # voting.
+        # NOTE: To triangulate all points, we can solve the following homogeneous
+        # linear system of equations: AX=0, where X is the matrix of row vector
+        # points in homogeneous coordinates, and A is the matrix of stacked cross
+        # product vectors such that AX=0 <=> x \times PX = 0. This is the cross
+        # product between the observed image points and the projected points, which
+        # must be 0 to indicate that both are vectors that lie in the same
+        # direction, since perspective projection only matches observations up to
+        # scale. We then avoid the trivial solution x=0 by minimizing ||AX|| such
+        # that ||X||=1 via SVD:
+        X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
+        X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
+        # Filter out keypoints to only keep matches:
+        X_a = X_a[[m.queryIdx for m in f_tpl.frame_a_to_b_matches]]
+        X_b = X_b[[m.trainIdx for m in f_tpl.frame_a_to_b_matches]]
+        assert X_a.shape == X_b.shape
+        best_cam_pose, largest_vote = None, 0
+        best_triangulated_pts = None
+        pose_a = np.hstack([np.eye(3), np.zeros((3, 1))])
+        P1 = self.K @ pose_a
+        corresp_a, corresp_b = None, None
+        for pose_candidate in cam_poses:
+            if np.linalg.det(pose_candidate[:, :3]) < 0:
+                print("WARN: det(R)=-1, correcting")
+                pose_candidate[:, :3] = -pose_candidate[:, :3]
+                pose_candidate[:, -1] = -pose_candidate[:, -1]
+            P2 = self.K @ pose_candidate
+            triangulated_pts = np.zeros((inliers.sum(), 3))
+            nb_pts_in_front = 0
+            for j, ((u1, v1), (u2, v2)) in enumerate(zip(X_a[inliers], X_b[inliers])):
+                # A is the matrix of stacked cross-product vectors such that
+                # AX=0 <=> x \times PX = 0
+                A = np.array(
                     [
-                        u1 - cam_a_proj[:, 0],
-                        v1 - cam_a_proj[:, 1],
-                        u2 - cam_b_proj[:, 0],
-                        v2 - cam_b_proj[:, 1],
-                    ],
-                    axis=1,
-                ).ravel()
+                        u1 * P1[2] - P1[0],
+                        v1 * P1[2] - P1[1],
+                        u2 * P2[2] - P2[0],
+                        v2 * P2[2] - P2[1],
+                    ]
+                )
+                _, _, Vh = np.linalg.svd(A)
+                x_star = Vh[-1, :]  # Last row of V^T is the last column of V
+                if x_star[-1] != 0:
+                    x_star /= x_star[-1]  # Divide by w for perspective projection
+                triangulated_pts[j] = x_star[:3]
 
-            n_pts = best_triangulated_pts.shape[0]
-            refined_pts = least_squares(
-                reproj_err,
-                best_triangulated_pts.reshape(
-                    n_pts * 3,
-                ),
-                method="lm",
-            ).x.reshape(n_pts, 3)
-            # TODO: We need to rethink how frame pairs are stored! For a sequential
-            # approach, I want a linked list of frames where node_a -> node_b have
-            # keypoints, and I can init with node_a.pose to find node_b.pose.
-            f_tpl.cam_pose_a = pose_a
-            f_tpl.cam_pose_b = best_cam_pose
-            f_tpl.inliers = inlier_observations[i].sum()
-            f_tpl.triangulated_pts_linear = best_triangulated_pts
-            f_tpl.triangulated_pts = refined_pts
+                # Cheirality check: the 3D point must lie in front of both
+                # cameras, i.e. have positive depth in each camera frame.
+                # Camera A sits at the world origin (pose_a = [I|0]), so its
+                # depth is just X[2].
+                in_front_a = x_star[2] > 0
+
+                # Camera B has pose [R_b|t_b], meaning a world point X maps to
+                # the camera-B frame as x_b = R_b X + t_b. The depth of X in
+                # B's frame is therefore the third component: z_b = r_3 . X +
+                # t_b[2], where r_3 is the third row of R_b (B's optical axis).
+                # NOTE: t_b is NOT the camera center. The camera center in
+                # world coords is C = -R_b^T t_b (obtained by solving R_b C +
+                # t_b = 0). The condition r_3.(X - C) > 0 from the literature
+                # is algebraically equivalent to r_3.X + t_b[2] > 0, since
+                # r_3.(X - C) = r_3.X - r_3.C = r_3.X - r_3.(-R_b^T t_b) =
+                # r_3.X + (r_3 R_b^T) t_b = r_3.X + t_b[2] (because r_3 R_b^T
+                # picks out the third row of R_b R_b^T = I, i.e. e_3^T).
+                R_b = pose_candidate[:, :3]
+                t_b = pose_candidate[:, 3]
+                in_front_b = (R_b[2, :] @ x_star[:3] + t_b[2]) > 0
+
+                if in_front_a and in_front_b:
+                    nb_pts_in_front += 1
+            if nb_pts_in_front > largest_vote:
+                best_cam_pose = pose_candidate
+                largest_vote = nb_pts_in_front
+                best_triangulated_pts = triangulated_pts
+
+                matches_a = np.array(
+                    [m.queryIdx for m in f_tpl.frame_a_to_b_matches]
+                )  # Indices of keypoints
+                matches_b = np.array(
+                    [m.trainIdx for m in f_tpl.frame_a_to_b_matches]
+                )  # Indices of keypoints
+                corresp_a = {
+                    (0, x): j
+                    for (x, j) in zip(matches_a[inliers], range(len(triangulated_pts)))
+                }
+                corresp_b = {
+                    (1, x): j
+                    for (x, j) in zip(matches_b[inliers], range(len(triangulated_pts)))
+                }
+        if best_cam_pose is None:
+            raise ValueError("Could not find a camera pose for camera B!")
+        if best_triangulated_pts is None:
+            raise ValueError("Could not triangulate points!")
+        assert corresp_a is not None and corresp_b is not None
+        P2 = self.K @ best_cam_pose
+
+        # Refine 3D points via non-linear triangulation
+        def reproj_err(x: np.ndarray, *args, **kwargs) -> np.ndarray:
+            """
+            Args:
+                x (np.ndarray): flattened array of shape (N*3) for N points.
+            Returns the flattened vector of residuals.
+            """
+            n_pts = x.shape[0] // 3
+            x = x.reshape(n_pts, 3)
+            x_homo = np.concatenate([x, np.ones((n_pts, 1))], axis=1)
+            u1, v1 = X_a[inliers].T
+            u2, v2 = X_b[inliers].T
+            assert u1.shape[0] == x.shape[0]
+            assert u2.shape[0] == x.shape[0]
+            cam_a_proj = x_homo @ P1.T  # (N, 3)
+            cam_a_proj = (cam_a_proj / cam_a_proj[:, -1][:, None])[:, :2]
+            cam_b_proj = x_homo @ P2.T  # (N, 3)
+            cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
+            return np.stack(
+                [
+                    u1 - cam_a_proj[:, 0],
+                    v1 - cam_a_proj[:, 1],
+                    u2 - cam_b_proj[:, 0],
+                    v2 - cam_b_proj[:, 1],
+                ],
+                axis=1,
+            ).ravel()
+
+        n_pts = best_triangulated_pts.shape[0]
+        refined_pts = least_squares(
+            reproj_err,
+            best_triangulated_pts.reshape(
+                n_pts * 3,
+            ),
+            method="lm",
+        ).x.reshape(n_pts, 3)
+        f_tpl.cam_pose_a = pose_a
+        f_tpl.cam_pose_b = best_cam_pose
+        f_tpl.inliers = inliers.sum()
+        f_tpl.triangulated_pts_linear = best_triangulated_pts
+        f_tpl.triangulated_pts = refined_pts
+
+        corresp = {}
+        corresp.update(corresp_a)
+        corresp.update(corresp_b)
+
+        return Structure(
+            points3D=refined_pts,
+            correspondences=corresp,
+            poses={0: pose_a, 1: best_cam_pose},
+        )
 
     def _draw_camera_frustum(self, ax, center, R, d, w, h, color, label):
         x_axis = R[0, :]
@@ -437,165 +470,218 @@ class PosePredictor:
         )
 
     def draw_triangulation(self):
-        for f_tpl in self.frame_tuples:
-            assert f_tpl.inliers is not None
-            if f_tpl.inliers < 30:
-                continue
-            cam_pose_a = f_tpl.cam_pose_a
-            cam_pose_b = f_tpl.cam_pose_b
+        f_tpl = self.frame_tuples[0]
+        assert f_tpl.inliers is not None
+        cam_pose_a = f_tpl.cam_pose_a
+        cam_pose_b = f_tpl.cam_pose_b
+        assert cam_pose_a is not None and cam_pose_b is not None, (
+            "Cam poses weren't bootstrapped!"
+        )
 
-            pts_linear = f_tpl.triangulated_pts_linear
-            pts = f_tpl.triangulated_pts
-            assert pts is not None
-            print(f"Drawing {pts.shape[0]} points")
-            print(pts)
-            fig = plt.figure(figsize=(12, 10))
-            ax = fig.add_subplot(111)
-            if pts_linear is not None:
-                ax.scatter(
-                    pts_linear[:, 0],
-                    pts_linear[:, 2],
-                    s=4,
-                    c="orange",
-                    alpha=0.6,
-                    label="Linear triangulation",
-                )
+        pts_linear = f_tpl.triangulated_pts_linear
+        pts = f_tpl.triangulated_pts
+        assert pts is not None
+        print(f"Drawing {pts.shape[0]} points")
+        print(pts)
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111)
+        if pts_linear is not None:
             ax.scatter(
-                pts[:, 0],
-                pts[:, 2],
+                pts_linear[:, 0],
+                pts_linear[:, 2],
                 s=4,
-                c="blue",
+                c="orange",
                 alpha=0.6,
-                label="Non-linear triangulation",
+                label="Linear triangulation",
             )
+        ax.scatter(
+            pts[:, 0],
+            pts[:, 2],
+            s=4,
+            c="blue",
+            alpha=0.6,
+            label="Non-linear triangulation",
+        )
 
-            R_a = cam_pose_a[:, :3]
-            t_a = cam_pose_a[:, 3]
-            R_b = cam_pose_b[:, :3]
-            t_b = cam_pose_b[:, 3]
+        R_a = cam_pose_a[:, :3]
+        t_a = cam_pose_a[:, 3]
+        R_b = cam_pose_b[:, :3]
+        t_b = cam_pose_b[:, 3]
 
-            scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
-            arrow_len = max(scale * 0.1, 1.0)
-            head_w = arrow_len * 0.01
-            head_l = arrow_len * 0.15
+        scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
+        arrow_len = max(scale * 0.1, 1.0)
+        head_w = arrow_len * 0.01
+        head_l = arrow_len * 0.15
 
-            # Camera A at origin
-            ax.scatter(t_a[0], t_a[2], c="red", s=50, label="Camera A")
-            fwd_a = R_a[2, :]  # z-axis
-            ax.arrow(
-                t_a[0],
-                t_a[2],
-                fwd_a[0] * arrow_len,
-                fwd_a[2] * arrow_len,
-                head_width=head_w,
-                head_length=head_l,
-                fc="red",
-                ec="red",
-            )
+        # Camera A at origin
+        ax.scatter(t_a[0], t_a[2], c="red", s=50, label="Camera A")
+        fwd_a = R_a[2, :]  # z-axis
+        ax.arrow(
+            t_a[0],
+            t_a[2],
+            fwd_a[0] * arrow_len,
+            fwd_a[2] * arrow_len,
+            head_width=head_w,
+            head_length=head_l,
+            fc="red",
+            ec="red",
+        )
 
-            # Camera B
-            ax.scatter(t_b[0], t_b[2], c="green", s=50, label="Camera B")
-            fwd_b = R_b[2, :]  # z-axis in camera B's frame
-            ax.arrow(
-                t_b[0],
-                t_b[2],
-                fwd_b[0] * arrow_len,
-                fwd_b[2] * arrow_len,
-                head_width=head_w,
-                head_length=head_l,
-                fc="green",
-                ec="green",
-            )
+        # Camera B
+        ax.scatter(t_b[0], t_b[2], c="green", s=50, label="Camera B")
+        fwd_b = R_b[2, :]  # z-axis in camera B's frame
+        ax.arrow(
+            t_b[0],
+            t_b[2],
+            fwd_b[0] * arrow_len,
+            fwd_b[2] * arrow_len,
+            head_width=head_w,
+            head_length=head_l,
+            fc="green",
+            ec="green",
+        )
 
-            ax.set_xlabel("X")
-            ax.set_ylabel("Z")
-            ax.set_title(
-                "Triangulated 3D Points and Camera Frustums (seen from Y axis)"
-            )
-            ax.legend()
-            plt.show()
+        ax.set_xlabel("X")
+        ax.set_ylabel("Z")
+        ax.set_title("Triangulated 3D Points and Camera Frustums (seen from Y axis)")
+        ax.legend()
+        plt.show()
 
     def draw_triangulation_3D(self):
         # Draw a 3D plot of the triangulated points and of the camera frustums, given
         # the camera poses
-        for f_tpl in self.frame_tuples:
-            assert f_tpl.inliers is not None
-            if f_tpl.inliers < 30:
-                continue
-            cam_pose_a = f_tpl.cam_pose_a
-            cam_pose_b = f_tpl.cam_pose_b
+        f_tpl = self.frame_tuples[0]
+        assert f_tpl.inliers is not None
+        cam_pose_a = f_tpl.cam_pose_a
+        cam_pose_b = f_tpl.cam_pose_b
+        assert cam_pose_a is not None and cam_pose_b is not None, (
+            "Cam poses weren't bootstrapped!"
+        )
 
-            pts_linear = f_tpl.triangulated_pts_linear
-            pts = f_tpl.triangulated_pts
-            assert pts is not None
-            print(f"Drawing {pts.shape[0]} points")
-            print(pts)
-            center = pts.mean(axis=0)
-            scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
-            if scale == 0:
-                scale = 1.0
+        pts_linear = f_tpl.triangulated_pts_linear
+        pts = f_tpl.triangulated_pts
+        assert pts is not None
+        print(f"Drawing {pts.shape[0]} points")
+        print(pts)
+        center = pts.mean(axis=0)
+        scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
+        if scale == 0:
+            scale = 1.0
 
-            # Adjusted scale to be more robust
-            frustum_d = scale * 0.15
-            frustum_w = scale * 0.05
-            frustum_h = scale * 0.04
+        # Adjusted scale to be more robust
+        frustum_d = scale * 0.15
+        frustum_w = scale * 0.05
+        frustum_h = scale * 0.04
 
-            fig = plt.figure(figsize=(12, 10))
-            ax = fig.add_subplot(111, projection="3d")
-            if pts_linear is not None:
-                ax.scatter(
-                    pts_linear[:, 0],
-                    pts_linear[:, 1],
-                    pts_linear[:, 2],
-                    s=4,
-                    c="orange",
-                    alpha=0.6,
-                    label="Linear triangulation",
-                )
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection="3d")
+        if pts_linear is not None:
             ax.scatter(
-                pts[:, 0],
-                pts[:, 1],
-                pts[:, 2],
+                pts_linear[:, 0],
+                pts_linear[:, 1],
+                pts_linear[:, 2],
                 s=4,
-                c="blue",
+                c="orange",
                 alpha=0.6,
-                label="Non-linear triangulation",
+                label="Linear triangulation",
             )
+        ax.scatter(
+            pts[:, 0],
+            pts[:, 1],
+            pts[:, 2],
+            s=4,
+            c="blue",
+            alpha=0.6,
+            label="Non-linear triangulation",
+        )
 
-            R_a = cam_pose_a[:, :3]
-            t_a = cam_pose_a[:, 3]
-            R_b = cam_pose_b[:, :3]
-            t_b = cam_pose_b[:, 3]
-            print(f"Cam pose A: R={R_a}, t={t_a}")
-            print(f"Cam pose B: R={R_b}, t={t_b}")
+        R_a = cam_pose_a[:, :3]
+        t_a = cam_pose_a[:, 3]
+        R_b = cam_pose_b[:, :3]
+        t_b = cam_pose_b[:, 3]
+        print(f"Cam pose A: R={R_a}, t={t_a}")
+        print(f"Cam pose B: R={R_b}, t={t_b}")
 
-            self._draw_camera_frustum(
-                ax,
-                t_a,
-                R_a,
-                frustum_d,
-                frustum_w,
-                frustum_h,
-                "red",
-                "Camera A",
-            )
-            self._draw_camera_frustum(
-                ax,
-                t_b,
-                R_b,
-                frustum_d,
-                frustum_w,
-                frustum_h,
-                "green",
-                "Camera B",
-            )
+        self._draw_camera_frustum(
+            ax,
+            t_a,
+            R_a,
+            frustum_d,
+            frustum_w,
+            frustum_h,
+            "red",
+            "Camera A",
+        )
+        self._draw_camera_frustum(
+            ax,
+            t_b,
+            R_b,
+            frustum_d,
+            frustum_w,
+            frustum_h,
+            "green",
+            "Camera B",
+        )
 
-            ax.set_xlabel("X")
-            ax.set_ylabel("Y")
-            ax.set_zlabel("Z")
-            ax.set_title("Triangulated 3D Points and Camera Frustums")
-            ax.legend()
-            plt.show()
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        ax.set_title("Triangulated 3D Points and Camera Frustums")
+        ax.legend()
+        plt.show()
+
+
+class PerspectiveNPoint:
+    def __init__(self, frame_tuples: List[FrameTuple], K: np.ndarray) -> None:
+        self.frame_tuples = frame_tuples
+        assert K.shape == (3, 3)
+        self.K = K
+
+    def _solve_p3p(self):
+        # TODO: Normalize 2D correspondances such that y = (u, v, 1), |y|=1.
+        # TODO: Verify that all 3D and 2D points aren't colinear.
+        # TODO: Implement RANSAC loop to compute P3P on inliers.
+        raise NotImplementedError("P3P not implemented yet.")
+
+    def fit(self, structure: Structure, inlier_observations: List[np.ndarray]):
+        """
+        Fit camera poses to 3D-2D point correspondances via P3P and RANSAC.
+
+        Given a calibrated pinhole camera, three 3D points x_i = (x_i, y_i, z_i),
+        and corresponding homogeneous image coordinates y_i \sim (u_i, v_i, 1) such
+        that |y_i| = 1, then:
+
+            lambda_i y_i = R x_i + t, i in {1, 2, 3},
+
+        where the rotation R in SO(3) together with the translation t in R^3 define the
+        pose of the camera.
+
+        In short, a P3P solver is a function
+
+            [R_k, t_k] = P3P(x_{1:3}, y_{1:3}).
+
+        Depending on the configuration of the points, P3P has up to four solutions.
+        """
+        # Register remaining images and estimate next camera poses:
+        for i in range(1, len(self.frame_tuples)):  # Start at the pair after bootstrap
+            # 1. Compute correspondences to existing scene points via
+            # matches to previous frame:
+            inliers = inlier_observations[i]
+            f_tpl = self.frame_tuples[i]
+            matches_a = np.array([m.queryIdx for m in f_tpl.frame_a_to_b_matches])
+            matches_b = np.array([m.trainIdx for m in f_tpl.frame_a_to_b_matches])
+            # TODO: Filter matches by the indices of those triangulated (should be all
+            # no?)
+            # TODO: Register correspondances:
+            corresp = {}
+            corresp[(i * 2 + 0, x)] = pt3d_id
+            corresp[(i * 2 + 1, x)] = pt3d_id
+            structure.correspondences.update(corresp)
+            # 2. Solve PnP:
+            cam_pose_b = self._solve_p3p()
+            points3D = self._solve_p3p()
+            structure.points3D = np.stack([structure.points3D, points3D], axis=0)
+            structure.poses[i * 2 + 1] = cam_pose_b
 
 
 class BundleAdjustment:
@@ -688,7 +774,7 @@ def extract_and_match(
     # Now that we've got good candidate matches, we can start filtering them with
     # RANSAC and the Fundamental matrix, ie if x'TFx ~= 0 the match is good, otherwise
     # it's an outlier.
-    ransac = RANSAC(frame_tuples)
+    ransac = EpipolarRANSAC(frame_tuples)
     inliers: List[np.ndarray] = ransac.filter()
     if debug:
         ransac.draw_matches()
@@ -696,18 +782,31 @@ def extract_and_match(
         [isinstance(f_tpl.fundamental_matrix, np.ndarray) for f_tpl in frame_tuples]
     ), "Fundamental matrix not computed for all frames during RANSAC"
 
-    # INFO: Stage 4: Camera pose prediction and point triangulation
+    # INFO: Stage 4: 2D-2D Camera pose prediction via Essential matrix decomposition and
+    # point triangulation. The 3D points are a by-product of computing the pose from
+    # decomposing the Essential matrix, and filtering the valid pose via the Cheirality
+    # condition. Here, we only bootstrap the 3D structure.
     if intrinsics_path is None:
         raise NotImplementedError(
             "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
         )
     else:
         K = np.load(intrinsics_path)[0]
+    # WARN: How about scale ambiguity that comes with E-decomposition (2D-2D
+    # correspondances and pose prediction)? Well, unfortunately that's just a thing of
+    # monocular SfM. We just *can't recover absolute scale from images alone*. However,
+    # chaining E-decomposition for each new camera *will lead to scale drift*. To remedy
+    # this, we use PnP!
 
-    pose_predictor = PosePredictor(frame_tuples, K)
-    pose_predictor.fit(inliers)
+    bootstrap = StructureBootstrap(frame_tuples, K)
+    structure = bootstrap.init(inliers)
     if debug:
-        pose_predictor.draw_triangulation_3D()
+        bootstrap.draw_triangulation_3D()
+    # INFO: Stage 5: register all images and solve all camera poses using PnP. Given the
+    # initial 3D points, register each new image in the scene using 3D-2D
+    # correspondances.
+    pnp = PerspectiveNPoint(frame_tuples, K)
+    pnp.fit(structure, inliers)
     assert all(
         [
             isinstance(f_tpl.cam_pose_a, np.ndarray)

@@ -17,10 +17,10 @@ to fully understand the subject and have a reference implementation.
 - [x] Estimating Fundamental Matrix (F)
 - [x] RANSAC outlier rejection with F
 - [x] Estimating Essential Matrix from Fundamental Matrix
-- [x] Estimate Camera Pose from Essential Matrix
+- [x] Estimate Camera Pose from Essential Matrix (2D-2D)
 - [x] Check for Cheirality Condition using Triangulation
-- [ ] Point refinement via non-linear triangulation
-- [ ] Perspective-n-Point
+- [x] Point refinement via non-linear triangulation
+- [ ] Robust camera pose prediction without scale drift via Perspective-n-Point (3D-2D)
 - [ ] Bundle Adjustment
 
 See my [notes](./NOTES.md).
@@ -68,3 +68,5 @@ Here are the resources I've used for this project:
 - [Epipolar Geometry and the Fundamental Matrix, Hartley and Zisserman](https://www.robots.ox.ac.uk/~vgg/hzbook/hzbook1/HZepipolar.pdf)
 - [5-point motion estimation made easy, Li and Hartley](https://users.cecs.anu.edu.au/~hongdong/new5pt_cameraREady_ver_1.pdf-)
 - [Foundations of Computer Vision](https://visionbook.mit.edu/)
+- [Lambda Twist P3P](https://openaccess.thecvf.com/content_ECCV_2018/html/Mikael_Persson_Lambda_Twist_An_ECCV_2018_paper.html)
+- [Kneip, Scaramuzza, Siegwart "A Novel Parametrization of the P3P Problem" (ICRA 2011)](https://rpg.ifi.uzh.ch/docs/CVPR11_kneip.pdf)
