@@ -648,7 +648,7 @@ class PerspectiveNPoint:
         Fit camera poses to 3D-2D point correspondances via P3P and RANSAC.
 
         Given a calibrated pinhole camera, three 3D points x_i = (x_i, y_i, z_i),
-        and corresponding homogeneous image coordinates y_i \sim (u_i, v_i, 1) such
+        and corresponding homogeneous image coordinates y_i sim (u_i, v_i, 1) such
         that |y_i| = 1, then:
 
             lambda_i y_i = R x_i + t, i in {1, 2, 3},
@@ -663,6 +663,7 @@ class PerspectiveNPoint:
         Depending on the configuration of the points, P3P has up to four solutions.
         """
         # Register remaining images and estimate next camera poses:
+        last_frame_pts_offset = 0
         for i in range(1, len(self.frame_tuples)):  # Start at the pair after bootstrap
             # 1. Compute correspondences to existing scene points via
             # matches to previous frame:
@@ -670,16 +671,26 @@ class PerspectiveNPoint:
             f_tpl = self.frame_tuples[i]
             matches_a = np.array([m.queryIdx for m in f_tpl.frame_a_to_b_matches])
             matches_b = np.array([m.trainIdx for m in f_tpl.frame_a_to_b_matches])
-            # TODO: Filter matches by the indices of those triangulated (should be all
-            # no?)
-            # TODO: Register correspondances:
+            # Filter matches by the indices of those in common with the previous
+            # pair:
+            last_tpl = self.frame_tuples[i - 1]
+            last_matches_b = np.array(
+                [m.trainIdx for m in last_tpl.frame_a_to_b_matches]
+            )
+            last_inliers = inlier_observations[i - 1]
+            in_common, comm1, comm2 = np.intersect1d(
+                matches_a[inliers], last_matches_b[last_inliers], return_indices=True
+            )  # Matches (keypoint ids) that are common to both tuples
             corresp = {}
-            corresp[(i * 2 + 0, x)] = pt3d_id
-            corresp[(i * 2 + 1, x)] = pt3d_id
+            for j, k in enumerate(comm2):
+                corresp[(i * 2 + 0, matches_a[inliers][k])] = j + last_frame_pts_offset
+                corresp[(i * 2 + 1, matches_b[inliers][k])] = j + last_frame_pts_offset
             structure.correspondences.update(corresp)
+            last_frame_pts_offset += len(in_common)
             # 2. Solve PnP:
-            cam_pose_b = self._solve_p3p()
-            points3D = self._solve_p3p()
+            idx = np.random.choice(len(in_common), 3, replace=False)
+            cam_pose_b = self._solve_p3p(structure.points3D[idx])
+            points3D = triangulate_pts_dlt(cam_pose_a, cam_pose_b, in_common)
             structure.points3D = np.stack([structure.points3D, points3D], axis=0)
             structure.poses[i * 2 + 1] = cam_pose_b
 
@@ -787,6 +798,12 @@ def extract_and_match(
     # decomposing the Essential matrix, and filtering the valid pose via the Cheirality
     # condition. Here, we only bootstrap the 3D structure.
     if intrinsics_path is None:
+        # TODO: Load focal length from EXIF of images if available. If not, come up with
+        # a rough initialization and optimize for it in bundle adjustment. Another way
+        # is to estimate the focal length from the hommography
+        # (https://imkaywu.github.io/blog/2017/10/focal-from-homography/), but this
+        # assumes that the two camera centers are fixed and the caameras only undergo
+        # rotations.
         raise NotImplementedError(
             "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
         )
