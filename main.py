@@ -10,6 +10,8 @@ from matplotlib import pyplot as plt
 from scipy.optimize import least_squares
 from tqdm import tqdm
 
+import fqs
+
 app = typer.Typer()
 
 
@@ -631,16 +633,145 @@ class StructureBootstrap:
         plt.show()
 
 
+def normalize(x: np.ndarray) -> np.ndarray:
+    return x / np.linalg.norm(x)
+
+
 class PerspectiveNPoint:
     def __init__(self, frame_tuples: List[FrameTuple], K: np.ndarray) -> None:
         self.frame_tuples = frame_tuples
         assert K.shape == (3, 3)
         self.K = K
+        self.K_inv = np.linalg.inv(K)
 
-    def _solve_p3p(self):
-        # TODO: Normalize 2D correspondances such that y = (u, v, 1), |y|=1.
+    def _solve_p3p(self, world_pts: np.ndarray, img_pts: np.ndarray):
+        """
+        This is the P3P implementation of Kneip et al, CVPR 2011 (https://rpg.ifi.uzh.ch/docs/CVPR11_kneip.pdf)
+        """
         # TODO: Verify that all 3D and 2D points aren't colinear.
-        # TODO: Implement RANSAC loop to compute P3P on inliers.
+        assert world_pts.shape == (3, 3)  # TODO: Homogeneous?
+        p1, p2, p3 = world_pts[0], world_pts[1], world_pts[2]
+        u1, u2, u3 = img_pts[0], img_pts[1], img_pts[2]
+        f1, f2, f3 = (
+            normalize(self.K_inv @ u1),
+            normalize(self.K_inv @ u2),
+            normalize(self.K_inv @ u3),
+        )
+        tx = f1
+        tz = normalize(np.cross(f1, f2))
+        ty = np.cross(tz, tx)
+        T = np.stack([tx, ty, tz])  # Stacked row-wise
+        f3_tau = T @ f3
+        nx = normalize(p2 - p1)
+        nz = normalize(np.cross(nx, p3 - p1))
+        ny = np.cross(nz, nx)
+        N = np.stack([nx, ny, nz])  # Stacked row-wise
+        # P3_nabla = (p1, p2, 0)^T, so:
+        P3_nabla = N @ (p3 - p1)
+        px = P3_nabla[0]
+        py = P3_nabla[1]
+        d12 = np.linalg.norm(p2 - p1)
+        # The sign of b = cot Beta is given by the sign of cos Beta = f1 @ f2
+        b = np.sqrt(1 / (1 - (f1 @ f2) ** 2) - 1)
+        b *= np.sign(f1 @ f2)
+        phi_1 = f3_tau[0] / f3_tau[2]
+        phi_2 = f3_tau[1] / f3_tau[2]
+        # Now we compute the factors of the polynomial (quatric):
+        a4 = -(phi_2**2) * py**4 - phi_1**2 * py**4 - py**4
+        a3 = (
+            2 * py**3 * d12 * b
+            + 2 * phi_2**2 * py**3 * d12 * b
+            - 2 * phi_1 * phi_2 * py**3 * d12
+        )
+        a2 = (
+            -(phi_2**2) * px**2 * py**2
+            - phi_2**2 * py**2 * d12**2 * b**2
+            - phi_2**2 * py**2 * d12**2
+            + phi_2**2 * py**4
+            + phi_1**2 * py**4
+            + 2 * px * py**2 * d12
+            + 2 * phi_1 * phi_2 * px * py**2 * d12 * b
+            - phi_1**2 * px**2 * py**2
+            + 2 * phi_2**2 * px * py**2 * d12
+            - py**2 * d12**2 * b**2
+            - 2 * px**2 * py**2
+        )
+        a1 = (
+            2 * px**2 * py * d12 * b
+            + 2 * phi_1 * phi_2 * py**3 * d12
+            - 2 * phi_2**2 * py**3 * d12 * b
+            - 2 * px * py * d12**2 * b
+        )
+        a0 = (
+            -2 * phi_1 * phi_2 * px * py**2 * d12 * b
+            + phi_2**2 * py**2 * d12**2
+            + 2 * px**3 * d12
+            - px**2 * d12**2
+            + phi_2**2 * px**2 * py**2
+            - px**4
+            - 2 * phi_2**2 * px * py**2 * d12
+            + phi_1**2 * px**2 * py**2
+            + phi_2**2 * py**2 * d12**2 * b**2
+        )
+        # We can find the real roots of the quatric using Ferrari's closed form
+        # solution:
+        # NOTE: According to wikipedia, it's easier if we convert to a depressed
+        # quartic, where: x^4 + bx^3 + cx^2 +dx + e = 0, with b=a3/a4, c=a2/a4, d=a1/a4,
+        # e=a0/a4. Anyway, I decided to use someone else's implementation, but yeah they
+        # do use the depressed quartic form!
+        coeff = np.array([a4, a3, a2, a1, a0])
+        if np.any(np.isnan(coeff)):
+            raise ValueError("Some quartic polynomials are NaN!")
+        roots = fqs.quartic_roots(coeff)
+        solutions = []
+        for i in range(4):
+            cos_theta = roots[i]
+            if abs(cos_theta.imag) > 1e-8:
+                continue
+
+            cos_theta = cos_theta.real
+
+            if abs(cos_theta) > 1:
+                continue
+            # For each solution, we find the values for cot alpha:
+            cot_alpha = ((phi_1 / phi_2) * px + cos_theta * py - d12 * b) / (
+                (phi_1 / phi_2) * cos_theta * py - px + d12
+            )
+            # Compute all trigonometric forms for alpha and theta using the trignonometric
+            # relationships and the restricted parameter domains:
+            # NOTE: "Using the restricted domains of parameters α and θ, all appearing
+            # trigonometric forms of the parameters can be directly derived from cot α
+            # and cos θ using simple trigonometric relationships."
+            # NOTE: "Note that θ ∈ [0; π] if f τ 3,z < 0, and θ ∈ [−π; 0] if f τ 3,z > 0,
+            # where ~f τ 3 is obtained from ~f3 via (1)."
+            # NOTE: "We define the free parameter α ∈ [0; π] as the angle ∠P2P1C."
+            cos_alpha = cot_alpha / np.sqrt(1 + cot_alpha**2)
+            sin_alpha = 1 / np.sqrt(1 + cot_alpha**2)  # Positive because α ∈ [0; π]
+            sin_theta = np.sqrt(max(0.0, 1.0 - cos_theta**2))
+            if f3_tau[2] > 0:
+                sin_theta *= -1
+            # Compute Cnabla and Q for each solution:
+            Cnabla = np.array(
+                [
+                    d12 * cos_alpha * (sin_alpha * b + cos_alpha),
+                    d12 * sin_alpha * cos_theta * (sin_alpha * b + cos_alpha),
+                    d12 * sin_alpha * sin_theta * (sin_alpha * b + cos_alpha),
+                ]
+            )
+            Q = np.array(
+                [
+                    [-cos_alpha, -sin_alpha * cos_theta, -sin_alpha * sin_theta],
+                    [sin_alpha, -cos_alpha * cos_theta, -cos_alpha * sin_theta],
+                    [0, -sin_theta, cos_theta],
+                ]
+            )
+            # Compute the absolute camera center C and orientation R for each solution:
+            C = p1 + N.T @ Cnabla
+            R = N.T @ Q.T @ T
+            # TODO: Cheirality check
+            solutions.append((C, R))
+
+        # TODO: Disambiguate the 4 solutions using a 4th measurement
         raise NotImplementedError("P3P not implemented yet.")
 
     def fit(self, structure: Structure, inlier_observations: List[np.ndarray]):
@@ -689,7 +820,9 @@ class PerspectiveNPoint:
             last_frame_pts_offset += len(in_common)
             # 2. Solve PnP:
             idx = np.random.choice(len(in_common), 3, replace=False)
-            cam_pose_b = self._solve_p3p(structure.points3D[idx])
+            # TODO: Implement RANSAC loop to compute P3P on inliers.
+            pts2D = None  # TODO:
+            cam_pose_b = self._solve_p3p(structure.points3D[idx], pts2D)
             points3D = triangulate_pts_dlt(cam_pose_a, cam_pose_b, in_common)
             structure.points3D = np.stack([structure.points3D, points3D], axis=0)
             structure.poses[i * 2 + 1] = cam_pose_b
@@ -803,7 +936,8 @@ def extract_and_match(
         # is to estimate the focal length from the hommography
         # (https://imkaywu.github.io/blog/2017/10/focal-from-homography/), but this
         # assumes that the two camera centers are fixed and the caameras only undergo
-        # rotations.
+        # rotations. In practice, it seems everyone uses UPnP
+        # (https://openreview.net/pdf?id=PbMNl2kC0u) or a flavour of PnPf (www.researchgate.net/publication/354289451_Efficient_DLT-Based_Method_for_Solving_PnP_PnPf_and_PnPfr_Problems)
         raise NotImplementedError(
             "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
         )
