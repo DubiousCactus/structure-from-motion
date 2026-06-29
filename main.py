@@ -649,7 +649,8 @@ class PerspectiveNPoint:
         This is the P3P implementation of Kneip et al, CVPR 2011 (https://rpg.ifi.uzh.ch/docs/CVPR11_kneip.pdf)
         """
         # TODO: Verify that all 3D and 2D points aren't colinear.
-        assert world_pts.shape == (3, 3)  # TODO: Homogeneous?
+        assert world_pts.shape == (4, 3)  # TODO: Homogeneous?
+        assert img_pts.shape == (4, 2)  # TODO: Homogeneous?
         p1, p2, p3 = world_pts[0], world_pts[1], world_pts[2]
         u1, u2, u3 = (
             np.concatenate([img_pts[0], np.ones((1,))]),
@@ -781,9 +782,30 @@ class PerspectiveNPoint:
                 solutions.append((C, R))
 
         if len(solutions) > 1:
-            # TODO: Disambiguate the 4 solutions using a 4th measurement
-            pass
-        raise NotImplementedError("P3P not implemented yet.")
+            # INFO: Disambiguate the 4 solutions using a 4th measurement
+            p4, u4 = world_pts[3], np.concatenate([img_pts[3], np.ones((1,))])
+            p4_homo = np.concatenate([p4, np.ones((1,))])
+            solution, best_solution_err = None, np.inf
+            for candidate in solutions:
+                C, R = candidate
+                t = -R @ C  # TODO: Correct??
+                pose = np.hstack([R, t[:, None]])
+                P = self.K @ pose
+                cam_b_proj = p4_homo @ P.T  # (3)
+                cam_b_proj = (cam_b_proj / cam_b_proj[-1])[:2]
+                reproj_err = (cam_b_proj - u4).sum() ** 2
+                if reproj_err < best_solution_err:
+                    solution = pose
+                    best_solution_err = reproj_err
+        elif len(solutions) > 0:
+            C, R = solutions[0]
+            t = -R @ C  # TODO: Correct??
+            solution = np.hstack([R, t[:, None]])
+        else:
+            warnings.warn("Could not find P3P solution")
+            return None
+
+        return solution
 
     def fit(self, structure: Structure, inlier_observations: List[np.ndarray]):
         """
@@ -829,8 +851,8 @@ class PerspectiveNPoint:
                 corresp[(i * 2 + 0, matches_a[inliers][k])] = j + last_frame_pts_offset
                 corresp[(i * 2 + 1, matches_b[inliers][k])] = j + last_frame_pts_offset
             structure.correspondences.update(corresp)
-            # 2. Solve PnP:
-            idx = np.random.choice(len(in_common), 3, replace=False)
+            # 2. Solve PnP (3 points + 1 to disambiguate):
+            idx = np.random.choice(len(in_common), 4, replace=False)
             # TODO: Implement RANSAC loop to compute P3P on inliers.
             # INFO: Sample 3D-2D correspondences for camera B:
             # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
@@ -838,7 +860,7 @@ class PerspectiveNPoint:
             pts2D = X_b[comm2[idx]]
             pts3D = structure.points3D[last_frame_pts_offset + idx]
             cam_pose_b = self._solve_p3p(pts3D, pts2D)
-            print(cam_pose_b)
+            print(f"PnP solution: [R|t]={cam_pose_b}")
             points3D = triangulate_pts_dlt(cam_pose_a, cam_pose_b, in_common)
             structure.points3D = np.stack([structure.points3D, points3D], axis=0)
             structure.poses[i * 2 + 1] = cam_pose_b
