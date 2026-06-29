@@ -651,7 +651,11 @@ class PerspectiveNPoint:
         # TODO: Verify that all 3D and 2D points aren't colinear.
         assert world_pts.shape == (3, 3)  # TODO: Homogeneous?
         p1, p2, p3 = world_pts[0], world_pts[1], world_pts[2]
-        u1, u2, u3 = img_pts[0], img_pts[1], img_pts[2]
+        u1, u2, u3 = (
+            np.concatenate([img_pts[0], np.ones((1,))]),
+            np.concatenate([img_pts[1], np.ones((1,))]),
+            np.concatenate([img_pts[2], np.ones((1,))]),
+        )
         f1, f2, f3 = (
             normalize(self.K_inv @ u1),
             normalize(self.K_inv @ u2),
@@ -722,7 +726,7 @@ class PerspectiveNPoint:
         coeff = np.array([a4, a3, a2, a1, a0])
         if np.any(np.isnan(coeff)):
             raise ValueError("Some quartic polynomials are NaN!")
-        roots = fqs.quartic_roots(coeff)
+        roots = fqs.quartic_roots(coeff)[0]
         solutions = []
         for i in range(4):
             cos_theta = roots[i]
@@ -795,6 +799,7 @@ class PerspectiveNPoint:
         """
         # Register remaining images and estimate next camera poses:
         last_frame_pts_offset = 0
+        # TODO: thread and SIMD with Numba
         for i in range(1, len(self.frame_tuples)):  # Start at the pair after bootstrap
             # 1. Compute correspondences to existing scene points via
             # matches to previous frame:
@@ -817,15 +822,20 @@ class PerspectiveNPoint:
                 corresp[(i * 2 + 0, matches_a[inliers][k])] = j + last_frame_pts_offset
                 corresp[(i * 2 + 1, matches_b[inliers][k])] = j + last_frame_pts_offset
             structure.correspondences.update(corresp)
-            last_frame_pts_offset += len(in_common)
             # 2. Solve PnP:
             idx = np.random.choice(len(in_common), 3, replace=False)
             # TODO: Implement RANSAC loop to compute P3P on inliers.
-            pts2D = None  # TODO:
-            cam_pose_b = self._solve_p3p(structure.points3D[idx], pts2D)
+            # INFO: Sample 3D-2D correspondences for camera B:
+            # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
+            X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
+            pts2D = X_b[comm2[idx]]
+            pts3D = structure.points3D[last_frame_pts_offset + idx]
+            cam_pose_b = self._solve_p3p(pts3D, pts2D)
+            print(cam_pose_b)
             points3D = triangulate_pts_dlt(cam_pose_a, cam_pose_b, in_common)
             structure.points3D = np.stack([structure.points3D, points3D], axis=0)
             structure.poses[i * 2 + 1] = cam_pose_b
+            last_frame_pts_offset += len(in_common)
 
 
 class BundleAdjustment:
