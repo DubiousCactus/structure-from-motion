@@ -342,14 +342,14 @@ class StructureBootstrap:
 
                 # Camera B has pose [R_b|t_b], meaning a world point X maps to
                 # the camera-B frame as x_b = R_b X + t_b. The depth of X in
-                # B's frame is therefore the third component: z_b = r_3 . X +
+                # B's frame is therefore the third component: z_b = r_3 @ X +
                 # t_b[2], where r_3 is the third row of R_b (B's optical axis).
                 # NOTE: t_b is NOT the camera center. The camera center in
                 # world coords is C = -R_b^T t_b (obtained by solving R_b C +
-                # t_b = 0). The condition r_3.(X - C) > 0 from the literature
-                # is algebraically equivalent to r_3.X + t_b[2] > 0, since
-                # r_3.(X - C) = r_3.X - r_3.C = r_3.X - r_3.(-R_b^T t_b) =
-                # r_3.X + (r_3 R_b^T) t_b = r_3.X + t_b[2] (because r_3 R_b^T
+                # t_b = 0). The condition r_3@(X - C) > 0 from the literature
+                # is algebraically equivalent to r_3@X + t_b[2] > 0, since
+                # r_3@(X - C) = r_3@X - r_3@C = r_3@X - r_3@(-R_b^T t_b) =
+                # r_3@X + (r_3 R_b^T) t_b = r_3@X + t_b[2] (because r_3 R_b^T
                 # picks out the third row of R_b R_b^T = I, i.e. e_3^T).
                 R_b = pose_candidate[:, :3]
                 t_b = pose_candidate[:, 3]
@@ -731,11 +731,15 @@ class PerspectiveNPoint:
         for i in range(4):
             cos_theta = roots[i]
             if abs(cos_theta.imag) > 1e-8:
+                print(
+                    f"[WARN] cos_theta.imag is too large: {cos_theta.imag}. SKIPPING!"
+                )
                 continue
 
             cos_theta = cos_theta.real
 
             if abs(cos_theta) > 1:
+                print(f"[WARN] |cos_theta| > 1: {cos_theta}. SKIPPING!")
                 continue
             # For each solution, we find the values for cot alpha:
             cot_alpha = ((phi_1 / phi_2) * px + cos_theta * py - d12 * b) / (
@@ -772,10 +776,13 @@ class PerspectiveNPoint:
             # Compute the absolute camera center C and orientation R for each solution:
             C = p1 + N.T @ Cnabla
             R = N.T @ Q.T @ T
-            # TODO: Cheirality check
-            solutions.append((C, R))
+            # Cheirality check:
+            if np.all(((world_pts - C) @ R[2, :].T) > 0):
+                solutions.append((C, R))
 
-        # TODO: Disambiguate the 4 solutions using a 4th measurement
+        if len(solutions) > 1:
+            # TODO: Disambiguate the 4 solutions using a 4th measurement
+            pass
         raise NotImplementedError("P3P not implemented yet.")
 
     def fit(self, structure: Structure, inlier_observations: List[np.ndarray]):
