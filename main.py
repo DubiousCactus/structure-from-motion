@@ -227,6 +227,29 @@ class EpipolarRANSAC:
             i += 1
 
 
+def triangulate_pts_dlt(
+    X_a: np.ndarray, X_b: np.ndarray, P1: np.ndarray, P2: np.ndarray
+) -> np.ndarray:
+    triangulated_pts = np.zeros((X_a.shape[0], 3))
+    for j, ((u1, v1), (u2, v2)) in enumerate(zip(X_a, X_b)):
+        # A is the matrix of stacked cross-product vectors such that
+        # AX=0 <=> x \times PX = 0
+        A = np.array(
+            [
+                u1 * P1[2] - P1[0],
+                v1 * P1[2] - P1[1],
+                u2 * P2[2] - P2[0],
+                v2 * P2[2] - P2[1],
+            ]
+        )
+        _, _, Vh = np.linalg.svd(A)
+        x_star = Vh[-1, :]  # Last row of V^T is the last column of V
+        if x_star[-1] != 0:
+            x_star /= x_star[-1]  # Divide by w for perspective projection
+        triangulated_pts[j] = x_star[:3]
+    return triangulated_pts
+
+
 class StructureBootstrap:
     def __init__(self, frame_tuples: List[FrameTuple], K: np.ndarray) -> None:
         self.frame_tuples = frame_tuples
@@ -315,24 +338,10 @@ class StructureBootstrap:
                 pose_candidate[:, :3] = -pose_candidate[:, :3]
                 pose_candidate[:, -1] = -pose_candidate[:, -1]
             P2 = self.K @ pose_candidate
-            triangulated_pts = np.zeros((inliers.sum(), 3))
+            triangulated_pts = triangulate_pts_dlt(X_a[inliers], X_b[inliers], P1, P2)
             nb_pts_in_front = 0
-            for j, ((u1, v1), (u2, v2)) in enumerate(zip(X_a[inliers], X_b[inliers])):
-                # A is the matrix of stacked cross-product vectors such that
-                # AX=0 <=> x \times PX = 0
-                A = np.array(
-                    [
-                        u1 * P1[2] - P1[0],
-                        v1 * P1[2] - P1[1],
-                        u2 * P2[2] - P2[0],
-                        v2 * P2[2] - P2[1],
-                    ]
-                )
-                _, _, Vh = np.linalg.svd(A)
-                x_star = Vh[-1, :]  # Last row of V^T is the last column of V
-                if x_star[-1] != 0:
-                    x_star /= x_star[-1]  # Divide by w for perspective projection
-                triangulated_pts[j] = x_star[:3]
+            for j in range(triangulated_pts.shape[0]):
+                x_star = triangulated_pts[j]
 
                 # Cheirality check: the 3D point must lie in front of both
                 # cameras, i.e. have positive depth in each camera frame.
@@ -783,7 +792,7 @@ class PerspectiveNPoint:
 
         if len(solutions) > 1:
             # INFO: Disambiguate the 4 solutions using a 4th measurement
-            p4, u4 = world_pts[3], np.concatenate([img_pts[3], np.ones((1,))])
+            p4, u4 = world_pts[3], img_pts[3]
             p4_homo = np.concatenate([p4, np.ones((1,))])
             solution, best_solution_err = None, np.inf
             for candidate in solutions:
@@ -847,22 +856,34 @@ class PerspectiveNPoint:
                 matches_a[inliers], last_matches_b[last_inliers], return_indices=True
             )  # Matches (keypoint ids) that are common to both tuples
             corresp = {}
-            for j, k in enumerate(comm2):
-                corresp[(i * 2 + 0, matches_a[inliers][k])] = j + last_frame_pts_offset
-                corresp[(i * 2 + 1, matches_b[inliers][k])] = j + last_frame_pts_offset
-            structure.correspondences.update(corresp)
+            # FIXME: right now correspondances are duplicated for each tuple! shouldn't
+            # we merge them? Anyway, I'm not sure we need to keep track of them, since
+            # we are computing them on the fly right now.
+            # for j, k in enumerate(comm2):
+            #     corresp[(i * 2 + 0, matches_a[inliers][k])] = j + last_frame_pts_offset
+            #     corresp[(i * 2 + 1, matches_b[inliers][k])] = j + last_frame_pts_offset
+            # structure.correspondences.update(corresp)
+
             # 2. Solve PnP (3 points + 1 to disambiguate):
             idx = np.random.choice(len(in_common), 4, replace=False)
             # TODO: Implement RANSAC loop to compute P3P on inliers.
-            # INFO: Sample 3D-2D correspondences for camera B:
+            # INFO: Sample 3D-2D correspondences foicr camera B:
             # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
             X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
             pts2D = X_b[comm2[idx]]
             pts3D = structure.points3D[last_frame_pts_offset + idx]
             cam_pose_b = self._solve_p3p(pts3D, pts2D)
+            if cam_pose_b is None:
+                raise NotImplementedError(
+                    "RANSAC for P3P not implemented yet, and P3P failed to find a solution!"
+                )
             print(f"PnP solution: [R|t]={cam_pose_b}")
-            points3D = triangulate_pts_dlt(cam_pose_a, cam_pose_b, in_common)
-            structure.points3D = np.stack([structure.points3D, points3D], axis=0)
+            cam_pose_a = structure.poses[i * 2 - 1]
+            X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
+            points3D = triangulate_pts_dlt(
+                X_a[comm1], X_b[comm2], self.K @ cam_pose_a, self.K @ cam_pose_b
+            )
+            structure.points3D = np.vstack([structure.points3D, points3D])
             structure.poses[i * 2 + 1] = cam_pose_b
             last_frame_pts_offset += len(in_common)
 
