@@ -647,11 +647,14 @@ def normalize(x: np.ndarray) -> np.ndarray:
 
 
 class PerspectiveNPoint:
-    def __init__(self, frame_tuples: List[FrameTuple], K: np.ndarray) -> None:
+    def __init__(
+        self, frame_tuples: List[FrameTuple], K: np.ndarray, ransac_iter: int = 1000
+    ) -> None:
         self.frame_tuples = frame_tuples
         assert K.shape == (3, 3)
         self.K = K
         self.K_inv = np.linalg.inv(K)
+        self.max_iter_ransac = ransac_iter
 
     def _solve_p3p(self, world_pts: np.ndarray, img_pts: np.ndarray):
         """
@@ -865,26 +868,46 @@ class PerspectiveNPoint:
             # structure.correspondences.update(corresp)
 
             # 2. Solve PnP (3 points + 1 to disambiguate):
-            idx = np.random.choice(len(in_common), 4, replace=False)
-            # TODO: Implement RANSAC loop to compute P3P on inliers.
-            # INFO: Sample 3D-2D correspondences foicr camera B:
-            # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
-            X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
-            pts2D = X_b[comm2[idx]]
-            pts3D = structure.points3D[last_frame_pts_offset + idx]
-            cam_pose_b = self._solve_p3p(pts3D, pts2D)
-            if cam_pose_b is None:
-                raise NotImplementedError(
-                    "RANSAC for P3P not implemented yet, and P3P failed to find a solution!"
-                )
-            print(f"PnP solution: [R|t]={cam_pose_b}")
+            pbar = tqdm(
+                range(self.max_iter_ransac), desc="Finding pose with RANSAC-P3P..."
+            )
             cam_pose_a = structure.poses[i * 2 - 1]
             X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
-            points3D = triangulate_pts_dlt(
-                X_a[comm1], X_b[comm2], self.K @ cam_pose_a, self.K @ cam_pose_b
-            )
+            X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
+            best_solution, best_err = None, np.inf
+            points3D = None
+            for _ in pbar:
+                idx = np.random.choice(len(in_common), 4, replace=False)
+                # TODO: Proper RANSAC where we expand the radius of selected points
+                # for P3P
+                # INFO: Sample 3D-2D correspondences foicr camera B:
+                # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
+                pts2D = X_b[comm2[idx]]
+                pts3D = structure.points3D[last_frame_pts_offset + idx]
+                cam_pose_b = self._solve_p3p(pts3D, pts2D)
+                if cam_pose_b is None:
+                    continue
+                P1 = self.K @ cam_pose_a
+                P2 = self.K @ cam_pose_b
+                points3D = triangulate_pts_dlt(X_a[comm1], X_b[comm2], P1, P2)
+                x_homo = np.concatenate(
+                    [points3D, np.ones((points3D.shape[0], 1))], axis=1
+                )
+
+                u, v = X_b[comm2].T
+                cam_b_proj = x_homo @ P2.T  # (N, 3)
+                cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
+                proj_err = (
+                    (u - cam_b_proj[:, 0]) ** 2 + (v - cam_b_proj[:, 1]) ** 2
+                ).sum()
+                if proj_err < best_err:
+                    best_solution = cam_pose_b
+                    best_err = proj_err
+            if points3D is None or best_solution is None:
+                raise ValueError("Could not solve camera pose via P3P!")
+
             structure.points3D = np.vstack([structure.points3D, points3D])
-            structure.poses[i * 2 + 1] = cam_pose_b
+            structure.poses[i * 2 + 1] = best_solution
             last_frame_pts_offset += len(in_common)
 
 
