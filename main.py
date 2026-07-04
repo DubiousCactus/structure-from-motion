@@ -70,7 +70,7 @@ class EpipolarRANSAC:
         frame_tuples: List[FrameTuple],
         consensus_ratio: float = 0.8,
         max_iter: int = 1000,
-        threshold: float = 0.05,
+        threshold: float = 8,
     ):
         self.frame_tuples = frame_tuples
         self.frame_inliers = []
@@ -648,13 +648,18 @@ def normalize(x: np.ndarray) -> np.ndarray:
 
 class PerspectiveNPoint:
     def __init__(
-        self, frame_tuples: List[FrameTuple], K: np.ndarray, ransac_iter: int = 1000
+        self,
+        frame_tuples: List[FrameTuple],
+        K: np.ndarray,
+        ransac_inlier_threshold: float = 0.01,
+        ransac_iter: int = 1000,
     ) -> None:
         self.frame_tuples = frame_tuples
         assert K.shape == (3, 3)
         self.K = K
         self.K_inv = np.linalg.inv(K)
         self.max_iter_ransac = ransac_iter
+        self.inlier_threshold = ransac_inlier_threshold
 
     def _solve_p3p(self, world_pts: np.ndarray, img_pts: np.ndarray):
         """
@@ -847,7 +852,7 @@ class PerspectiveNPoint:
             inliers = inlier_observations[i]
             f_tpl = self.frame_tuples[i]
             matches_a = np.array([m.queryIdx for m in f_tpl.frame_a_to_b_matches])
-            matches_b = np.array([m.trainIdx for m in f_tpl.frame_a_to_b_matches])
+            # matches_b = np.array([m.trainIdx for m in f_tpl.frame_a_to_b_matches])
             # Filter matches by the indices of those in common with the previous
             # pair:
             last_tpl = self.frame_tuples[i - 1]
@@ -874,12 +879,10 @@ class PerspectiveNPoint:
             cam_pose_a = structure.poses[i * 2 - 1]
             X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
             X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
-            best_solution, best_err = None, np.inf
+            best_solution, best_inlier_count = None, 0
             points3D = None
             for _ in pbar:
                 idx = np.random.choice(len(in_common), 4, replace=False)
-                # TODO: Proper RANSAC where we expand the radius of selected points
-                # for P3P
                 # INFO: Sample 3D-2D correspondences foicr camera B:
                 # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
                 pts2D = X_b[comm2[idx]]
@@ -897,17 +900,18 @@ class PerspectiveNPoint:
                 u, v = X_b[comm2].T
                 cam_b_proj = x_homo @ P2.T  # (N, 3)
                 cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
-                proj_err = (
-                    (u - cam_b_proj[:, 0]) ** 2 + (v - cam_b_proj[:, 1]) ** 2
-                ).sum()
-                if proj_err < best_err:
+                proj_errors = (u - cam_b_proj[:, 0]) ** 2 + (v - cam_b_proj[:, 1]) ** 2
+                inlier_mask = proj_errors < self.inlier_threshold
+                if inlier_mask.sum() > best_inlier_count:
                     best_solution = cam_pose_b
-                    best_err = proj_err
+                    best_inlier_count = inlier_mask.sum()
             if points3D is None or best_solution is None:
                 raise ValueError("Could not solve camera pose via P3P!")
 
             structure.points3D = np.vstack([structure.points3D, points3D])
             structure.poses[i * 2 + 1] = best_solution
+            f_tpl.cam_pose_a = cam_pose_a
+            f_tpl.cam_pose_b = best_solution
             last_frame_pts_offset += len(in_common)
 
 
