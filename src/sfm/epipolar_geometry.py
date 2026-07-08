@@ -281,7 +281,7 @@ class EpipolarRANSAC:
     def __init__(
         self,
         frame_tuples: List[FrameTuple],
-        consensus_ratio: float = 0.1,
+        consensus_ratio: float = 0.5,
         max_iter: int = 1000,
         threshold: float = 8,
     ):

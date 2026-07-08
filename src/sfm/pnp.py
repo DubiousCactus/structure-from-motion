@@ -17,11 +17,13 @@ class PerspectiveNPoint:
         cam_db: CameraDatabase,
         ransac_inlier_threshold: float = 0.01,
         ransac_iter: int = 1000,
+        consensus_ratio: float = 0.5,
     ) -> None:
         self.frame_tuples = frame_tuples
         self.cam_db = cam_db
         self.max_iter_ransac = ransac_iter
         self.inlier_threshold = ransac_inlier_threshold
+        self.consensus_ratio = consensus_ratio
 
     def _solve_p3p(self, world_pts: np.ndarray, img_pts: np.ndarray, K: np.ndarray):
         """
@@ -247,8 +249,9 @@ class PerspectiveNPoint:
             cam_pose_a = structure.poses[i * 2 - 1]
             X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
             X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
-            best_solution, best_inlier_count = None, 0
+            best_solution, best_inlier_count, best_fit_err = None, 0, np.inf
             points3D = None
+            consensus_min = max(4, int(self.consensus_ratio * X_a.shape[0]))
             for _ in pbar:
                 idx = np.random.choice(len(in_common), 4, replace=False)
                 # INFO: Sample 3D-2D correspondences foicr camera B:
@@ -270,9 +273,17 @@ class PerspectiveNPoint:
                 cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
                 proj_errors = (u - cam_b_proj[:, 0]) ** 2 + (v - cam_b_proj[:, 1]) ** 2
                 inlier_mask = proj_errors < self.inlier_threshold
-                if inlier_mask.sum() > best_inlier_count:
+                n_inliers = inlier_mask.sum()
+                if n_inliers < consensus_min:
+                    continue
+                this_err = proj_errors[inlier_mask].mean()
+                pbar.set_postfix({"#inliers": n_inliers.item(), "Total err": this_err})
+                if n_inliers > best_inlier_count or (
+                    n_inliers == best_inlier_count and this_err < best_fit_err
+                ):
                     best_solution = cam_pose_b
-                    best_inlier_count = inlier_mask.sum()
+                    best_fit_err = this_err
+                    best_inlier_count = n_inliers
             if points3D is None or best_solution is None:
                 raise ValueError("Could not solve camera pose via P3P!")
 
