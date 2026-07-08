@@ -70,3 +70,4 @@ Here are the resources I've used for this project:
 - [Foundations of Computer Vision](https://visionbook.mit.edu/)
 - [Lambda Twist P3P](https://openaccess.thecvf.com/content_ECCV_2018/html/Mikael_Persson_Lambda_Twist_An_ECCV_2018_paper.html)
 - [Kneip, Scaramuzza, Siegwart "A Novel Parametrization of the P3P Problem" (ICRA 2011)](https://rpg.ifi.uzh.ch/docs/CVPR11_kneip.pdf)
+- [Nikolov, Ivan (2020), “GGG-BenchmarkSfM- Secondary: Secondary Dataset for Benchmarking Close-range SfM Software Performance Captured with Different Cameras”, Mendeley Data, V1, doi: 10.17632/t4d8mv3fxt.1](https://data.mendeley.com/datasets/t4d8mv3fxt/1)
