@@ -8,6 +8,7 @@ dependencies = [
     "matplotlib>=3.10.8",
     "numba>=0.65.1",
     "numpy>=2.4.4",
+    "opencv-contrib-python>=5.0.0.93",
     "opencv-python>=4.13.0.92",
     "scipy>=1.17.1",
     "tqdm>=4.67.3",
@@ -18,3 +19,6 @@ dependencies = [
 dev = [
     "pytest>=9.1.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
