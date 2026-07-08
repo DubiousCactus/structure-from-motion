@@ -40,7 +40,7 @@ def extract_and_match_impl(
     if intrinsics_path is not None and not os.path.isfile(intrinsics_path):
         raise FileNotFoundError(f"Intrinsics not found at {intrinsics_path}")
     # INFO: Stage 1: feature extraction using ORB
-    orb = cv.ORB_create(nfeatures=2000, scaleFactor=1.2, nlevels=8)
+    orb = cv.ORB_create(nfeatures=1000, scaleFactor=1.2, nlevels=8)
     # surf = cv.xfeatures2d.SURF_create()
     frame_features = []
     for i, frame_file in tqdm(
@@ -87,7 +87,7 @@ def extract_and_match_impl(
             if len(match) < 2:
                 continue
             m, n = match
-            if m.distance < 0.8 * n.distance:
+            if m.distance < 0.9 * n.distance:
                 good_matches.append(m)
         frame_tuples.append(FrameTuple(i - 1, i, f1, f2, good_matches))
 
@@ -101,7 +101,10 @@ def extract_and_match_impl(
         ransac.draw_matches()
     assert all(
         [isinstance(f_tpl.fundamental_matrix, np.ndarray) for f_tpl in frame_tuples]
-    ), "Fundamental matrix not computed for all frames during RANSAC"
+    ), (
+        "Fundamental matrix not computed for all frames during RANSAC. "
+        + f"Got F list: {[f.fundamental_matrix for f in frame_tuples]}"
+    )
 
     # INFO: Stage 4: 2D-2D Camera pose prediction via Essential matrix decomposition and
     # point triangulation. The 3D points are a by-product of computing the pose from

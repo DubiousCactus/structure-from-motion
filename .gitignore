@@ -13,3 +13,4 @@ svd.png
 *.npy
 *.jpg
 data/
+/intrinsics.npz
