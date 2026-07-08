@@ -189,6 +189,71 @@ class PerspectiveNPoint:
 
         return solution
 
+    def _ransac_pnp(
+        self,
+        pts3D_candidates: np.ndarray,
+        pts2D_a: np.ndarray,
+        pts2D_b: np.ndarray,
+        K_a: np.ndarray,
+        K_b: np.ndarray,
+        cam_pose_a: np.ndarray,
+        consensus_min: int,
+    ) -> tuple:
+        """RANSAC-P3P loop to find the pose of camera B.
+
+        Parameters
+        ----------
+        pts3D_candidates : (N, 3) world points visible in both cameras.
+        pts2D_a : (N, 2) 2D observations in reference camera **A**.
+        pts2D_b : (N, 2) 2D observations in target camera **B**.
+        K_a : (3, 3) intrinsics of camera A.
+        K_b : (3, 3) intrinsics of camera B.
+        cam_pose_a : (3, 4) known pose of camera A.
+        consensus_min : int minimum inliers for a valid consensus.
+
+        Returns
+        -------
+        ``(best_pose, best_points3D)`` on success, ``(None, None)`` on failure.
+        """
+        best_solution, best_inlier_count, best_fit_err = None, 0, np.inf
+        best_points3D = None
+        n = len(pts3D_candidates)
+
+        for _ in tqdm(
+            range(self.max_iter_ransac), desc="Finding pose with RANSAC-P3P..."
+        ):
+            idx = np.random.choice(n, 4, replace=False)
+            cam_pose_b = self._solve_p3p(pts3D_candidates[idx], pts2D_b[idx], K_b)
+            if cam_pose_b is None:
+                continue
+
+            P_a = K_a @ cam_pose_a
+            P_b = K_b @ cam_pose_b
+            points3D = triangulate_pts_dlt(pts2D_a, pts2D_b, P_a, P_b)
+            x_homo = np.concatenate(
+                [points3D, np.ones((points3D.shape[0], 1))], axis=1
+            )
+
+            u, v = pts2D_b.T
+            cam_b_proj = x_homo @ P_b.T
+            cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
+            proj_errors = (u - cam_b_proj[:, 0]) ** 2 + (v - cam_b_proj[:, 1]) ** 2
+            n_inliers = (proj_errors < self.inlier_threshold).sum()
+
+            if n_inliers < consensus_min:
+                continue
+
+            this_err = proj_errors[proj_errors < self.inlier_threshold].mean()
+            if n_inliers > best_inlier_count or (
+                n_inliers == best_inlier_count and this_err < best_fit_err
+            ):
+                best_solution = cam_pose_b
+                best_fit_err = this_err
+                best_inlier_count = n_inliers
+                best_points3D = points3D
+
+        return best_solution, best_points3D
+
     def fit(self, structure: Structure, inlier_observations: List[np.ndarray]):
         """
         Fit camera poses to 3D-2D point correspondances via P3P and RANSAC.
@@ -242,49 +307,25 @@ class PerspectiveNPoint:
             # structure.correspondences.update(corresp)
 
             # 2. Solve PnP (3 points + 1 to disambiguate):
-            pbar = tqdm(
-                range(self.max_iter_ransac),
-                desc="Finding pose with RANSAC-P3P...",
-            )
             cam_pose_a = structure.poses[i * 2 - 1]
             X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
             X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
-            best_solution, best_inlier_count, best_fit_err = None, 0, np.inf
-            points3D = None
             consensus_min = max(4, int(self.consensus_ratio * X_a.shape[0]))
-            for _ in pbar:
-                idx = np.random.choice(len(in_common), 4, replace=False)
-                # INFO: Sample 3D-2D correspondences foicr camera B:
-                # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
-                pts2D = X_b[comm2[idx]]
-                pts3D = structure.points3D[last_frame_pts_offset + idx]
-                cam_pose_b = self._solve_p3p(pts3D, pts2D, K_b)
-                if cam_pose_b is None:
-                    continue
-                P1 = K_a @ cam_pose_a
-                P2 = K_b @ cam_pose_b
-                points3D = triangulate_pts_dlt(X_a[comm1], X_b[comm2], P1, P2)
-                x_homo = np.concatenate(
-                    [points3D, np.ones((points3D.shape[0], 1))], axis=1
-                )
 
-                u, v = X_b[comm2].T
-                cam_b_proj = x_homo @ P2.T  # (N, 3)
-                cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
-                proj_errors = (u - cam_b_proj[:, 0]) ** 2 + (v - cam_b_proj[:, 1]) ** 2
-                inlier_mask = proj_errors < self.inlier_threshold
-                n_inliers = inlier_mask.sum()
-                if n_inliers < consensus_min:
-                    continue
-                this_err = proj_errors[inlier_mask].mean()
-                pbar.set_postfix({"#inliers": n_inliers.item(), "Total err": this_err})
-                if n_inliers > best_inlier_count or (
-                    n_inliers == best_inlier_count and this_err < best_fit_err
-                ):
-                    best_solution = cam_pose_b
-                    best_fit_err = this_err
-                    best_inlier_count = n_inliers
-            if points3D is None or best_solution is None:
+            pts3D_candidates = structure.points3D[
+                last_frame_pts_offset : last_frame_pts_offset + len(in_common)
+            ]
+            best_solution, points3D = self._ransac_pnp(
+                pts3D_candidates,
+                X_a[comm1],
+                X_b[comm2],
+                K_a,
+                K_b,
+                cam_pose_a,
+                consensus_min,
+            )
+
+            if best_solution is None or points3D is None:
                 raise ValueError("Could not solve camera pose via P3P!")
 
             structure.points3D = np.vstack([structure.points3D, points3D])

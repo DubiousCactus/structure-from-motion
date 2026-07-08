@@ -6,6 +6,29 @@ the concepts. I'm now coming back to it with years of computer vision, ML, and g
 research, with the goal of building something fully functional for robotics or
 entertainment in real-time applications.
 
+## Usage
+To test this SfM pipeline, you may use the GGG benchmark. The following script will
+download and extract the dataset in `data/ggg/`:
+```
+uv run scripts/download_ggg.py
+```
+You can then extract the intrinsics from EXIF data using:
+```
+uv run sfm extract-intrinsics <path/to/scene>
+```
+You can now run the SfM pipeline:
+```
+uv run sfm extract-and-match --intrinsics-path <path/to/intrinsics.npz> <path/to/scene>
+```
+Finally, you may visualize the structure with:
+```
+uv run sfm visualize scene.npz
+```
+
+
+To run the unit tests: `uv run pytest`
+
+
 ## Roadmap
 I will first implement a basic SfM pipeline from scratch in Python with Numpy. This is
 to fully understand the subject and have a reference implementation.
@@ -22,6 +45,7 @@ to fully understand the subject and have a reference implementation.
 - [x] Point refinement via non-linear triangulation
 - [x] Robust camera pose prediction without scale drift via Perspective-n-Point (3D-2D)
 - [ ] Bundle Adjustment
+- [ ] 3D viewer for the structure
 
 See my [notes](./NOTES.md).
 

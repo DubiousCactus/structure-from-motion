@@ -118,6 +118,56 @@ def contaminated_scene(K, rng):
     }
 
 
+@pytest.fixture
+def pnp_scene(K, rng):
+    """A two-view scene with known inlier/outlier 3D-2D correspondences for PnP-RANSAC.
+
+    Camera A is at the origin (identity).  Camera B has a known rotation +
+    translation.  Some correspondences are outliers (randomly placed 2D
+    observations in camera B that do *not* match the true projection).
+    """
+    R_a = np.eye(3)
+    t_a = np.zeros(3)
+    pose_a = np.hstack([R_a, t_a[:, None]])
+
+    R_b = rotation_y(np.radians(15))
+    t_b = np.array([-1.0, 0.2, 0.1])
+    pose_b = np.hstack([R_b, t_b[:, None]])
+
+    n_inliers = 40
+    n_outliers = 20
+    n_total = n_inliers + n_outliers
+
+    pts3D = rng.uniform(-2.0, 2.0, (n_total, 3))
+    pts3D[:, 2] += 8.0
+
+    pts2D_a = project(K, pose_a, pts3D)
+    pts2D_b = project(K, pose_b, pts3D)
+
+    # Overwrite last n_outliers with random 2D points (outliers)
+    pts2D_b[n_inliers:] = rng.uniform([0, 0], [1000, 1000], (n_outliers, 2))
+
+    inlier_mask = np.zeros(n_total, dtype=bool)
+    inlier_mask[:n_inliers] = True
+
+    return {
+        "K": K,
+        "R_a": R_a,
+        "t_a": t_a,
+        "pose_a": pose_a,
+        "R_b": R_b,
+        "t_b": t_b,
+        "pose_b": pose_b,
+        "pts3D": pts3D,
+        "pts2D_a": pts2D_a,
+        "pts2D_b": pts2D_b,
+        "inlier_mask": inlier_mask,
+        "n_inliers": n_inliers,
+        "n_outliers": n_outliers,
+        "n_total": n_total,
+    }
+
+
 def build_frame_tuple(
     pts1: np.ndarray, pts2: np.ndarray, frame_a_id=0, frame_b_id=1
 ) -> FrameTuple:
