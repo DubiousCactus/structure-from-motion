@@ -1,16 +1,8 @@
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
-from main import FrameTuple, ImageFeatures
-from tests._synth import make_keypoints, make_matches, project, rotation_y
-
-# Ensure the project root (containing main.py) is importable.
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from sfm.data import FrameTuple, ImageFeatures
+from _synth import make_keypoints, make_matches, project, rotation_y
 
 
 @pytest.fixture

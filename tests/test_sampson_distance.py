@@ -1,7 +1,7 @@
 import cv2 as cv
 import numpy as np
 
-from main import eight_point_fundamental_matrix, sampson_distance
+from sfm.epipolar_geometry import eight_point_fundamental_matrix, sampson_distance
 
 
 def test_sampson_distance_zero_for_exact_correspondences(stereo_scene):

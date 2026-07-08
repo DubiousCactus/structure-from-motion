@@ -2,7 +2,7 @@ import cv2 as cv
 import numpy as np
 import pytest
 
-from main import eight_point_fundamental_matrix, hartley_normalize
+from sfm.epipolar_geometry import eight_point_fundamental_matrix, hartley_normalize
 
 
 def test_hartley_normalize_centroid_at_origin(rng):

@@ -3,8 +3,9 @@ import io
 
 import numpy as np
 
-from main import EpipolarRANSAC, StructureBootstrap
-from tests.conftest import build_frame_tuple
+from sfm.bootstrapping import StructureBootstrap
+from sfm.epipolar_geometry import EpipolarRANSAC
+from conftest import build_frame_tuple
 
 
 def _build_frame_tuple(stereo_scene):

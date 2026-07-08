@@ -2,7 +2,7 @@ import cv2 as cv
 import numpy as np
 import pytest
 
-from main import triangulate_pts_dlt
+from sfm.epipolar_geometry import triangulate_pts_dlt
 
 
 def test_triangulation_dlt_matches_ground_truth(stereo_scene):

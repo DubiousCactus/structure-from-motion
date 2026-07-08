@@ -20,7 +20,7 @@ to fully understand the subject and have a reference implementation.
 - [x] Estimate Camera Pose from Essential Matrix (2D-2D)
 - [x] Check for Cheirality Condition using Triangulation
 - [x] Point refinement via non-linear triangulation
-- [ ] Robust camera pose prediction without scale drift via Perspective-n-Point (3D-2D)
+- [x] Robust camera pose prediction without scale drift via Perspective-n-Point (3D-2D)
 - [ ] Bundle Adjustment
 
 See my [notes](./NOTES.md).
@@ -49,7 +49,7 @@ Python part (SfM prototype, [this project](https://github.com/DubiousCactus/stru
 - [x] Camera pose estimation
 - [x] Triangulation
 - [x] Non-linear triangulation for point refinement
-- [ ] PnP / UPnP
+- [x] PnP / UPnP
 - [ ] Bundle adjustment
 
 

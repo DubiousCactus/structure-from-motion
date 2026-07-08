@@ -4,7 +4,7 @@ import io
 import cv2 as cv
 import numpy as np
 
-from main import PerspectiveNPoint
+from sfm.pnp import PerspectiveNPoint
 
 
 def _make_pnp_scene(K, rng, R_true, t_true, n=12):

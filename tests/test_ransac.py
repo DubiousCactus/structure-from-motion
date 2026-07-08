@@ -4,8 +4,12 @@ import io
 import numpy as np
 import pytest
 
-from main import EpipolarRANSAC, eight_point_fundamental_matrix, sampson_distance
-from tests.conftest import build_frame_tuple
+from sfm.epipolar_geometry import (
+    EpipolarRANSAC,
+    eight_point_fundamental_matrix,
+    sampson_distance,
+)
+from conftest import build_frame_tuple
 
 
 def _run_filter(ransac: EpipolarRANSAC):

@@ -1,9 +1,9 @@
 import cv2 as cv
 import numpy as np
 
-from main import (
+from sfm.bootstrapping import StructureBootstrap
+from sfm.epipolar_geometry import (
     EpipolarRANSAC,
-    StructureBootstrap,
     decompose_essential_matrix,
     select_pose_by_cheirality,
 )
