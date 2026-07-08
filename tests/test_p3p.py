@@ -90,3 +90,29 @@ def test_p3p_reprojection_error_pure_translation(K, rng):
 
     assert pose is not None
     assert _reproj_error(K, pose, pts3D, pts2D) < 0.5
+
+
+def test_p3p_colinear_points_returns_none(K, rng):
+    """_solve_p3p must return None when the three 3D world points are colinear."""
+    R_true = np.eye(3)
+    t_true = np.array([0.4, -0.3, 0.2])
+
+    # All points on the line y=0, z=6 (colinear in 3D).
+    pts3D = np.array([
+        [-1.0, 0.0, 6.0],
+        [0.0, 0.0, 6.0],
+        [1.0, 0.0, 6.0],
+        [2.0, 0.0, 6.0],
+    ])
+    pose_true = np.hstack([R_true, t_true[:, None]])
+    P_true = K @ pose_true
+    Xh = np.hstack([pts3D, np.ones((4, 1))])
+    x = (P_true @ Xh.T).T
+    pts2D = x / x[:, 2:3]
+
+    cam_db = CameraDatabase.from_single(K)
+    pnp = PerspectiveNPoint([], cam_db)
+    with contextlib.redirect_stdout(io.StringIO()):
+        pose = pnp._solve_p3p(pts3D[:4], pts2D[:, :2], K)
+
+    assert pose is None

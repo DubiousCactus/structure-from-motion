@@ -1,4 +1,3 @@
-import warnings
 from typing import List
 
 import numpy as np
@@ -29,9 +28,8 @@ class PerspectiveNPoint:
         """
         This is the P3P implementation of Kneip et al, CVPR 2011 (https://rpg.ifi.uzh.ch/docs/CVPR11_kneip.pdf)
         """
-        # TODO: Verify that all 3D and 2D points aren't colinear.
-        assert world_pts.shape == (4, 3)  # TODO: Homogeneous?
-        assert img_pts.shape == (4, 2)  # TODO: Homogeneous?
+        assert world_pts.shape == (4, 3)
+        assert img_pts.shape == (4, 2)
         p1, p2, p3 = world_pts[0], world_pts[1], world_pts[2]
         u1, u2, u3 = (
             np.concatenate([img_pts[0], np.ones((1,))]),
@@ -50,7 +48,11 @@ class PerspectiveNPoint:
         T = np.stack([tx, ty, tz])  # Stacked row-wise
         f3_tau = T @ f3
         nx = normalize(p2 - p1)
-        nz = normalize(np.cross(nx, p3 - p1))
+        nz_cross = np.cross(nx, p3 - p1)
+        if np.linalg.norm(nz_cross) < 1e-12:
+            print("[WARN] 3D points are colinear — P3P has no unique solution. SKIPPING!")
+            return None
+        nz = normalize(nz_cross)
         ny = np.cross(nz, nx)
         N = np.stack([nx, ny, nz])  # Stacked row-wise
         # P3_nabla = (p1, p2, 0)^T, so:
@@ -170,7 +172,7 @@ class PerspectiveNPoint:
             solution, best_solution_err = None, np.inf
             for candidate in solutions:
                 C, R = candidate
-                t = -R @ C  # TODO: Correct??
+                t = -R @ C
                 pose = np.hstack([R, t[:, None]])
                 P = K @ pose
                 cam_b_proj = p4_homo @ P.T  # (3)
@@ -181,10 +183,9 @@ class PerspectiveNPoint:
                     best_solution_err = reproj_err
         elif len(solutions) > 0:
             C, R = solutions[0]
-            t = -R @ C  # TODO: Correct??
+            t = -R @ C
             solution = np.hstack([R, t[:, None]])
         else:
-            warnings.warn("Could not find P3P solution")
             return None
 
         return solution
@@ -230,9 +231,7 @@ class PerspectiveNPoint:
             P_a = K_a @ cam_pose_a
             P_b = K_b @ cam_pose_b
             points3D = triangulate_pts_dlt(pts2D_a, pts2D_b, P_a, P_b)
-            x_homo = np.concatenate(
-                [points3D, np.ones((points3D.shape[0], 1))], axis=1
-            )
+            x_homo = np.concatenate([points3D, np.ones((points3D.shape[0], 1))], axis=1)
 
             u, v = pts2D_b.T
             cam_b_proj = x_homo @ P_b.T
