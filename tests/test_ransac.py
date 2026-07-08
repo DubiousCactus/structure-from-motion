@@ -14,7 +14,10 @@ from conftest import build_frame_tuple
 
 def _run_filter(ransac: EpipolarRANSAC):
     """Run RANSAC.filter() with stdout (the print) and stderr (tqdm bars) swallowed."""
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    with (
+        contextlib.redirect_stdout(io.StringIO()),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
         return ransac.filter()
 
 
@@ -151,7 +154,9 @@ def test_ransac_multiple_frame_tuples(contaminated_scene, stereo_scene):
     """filter() must process multiple frame tuples and return one mask each."""
     f_a = build_frame_tuple(contaminated_scene["pts1"], contaminated_scene["pts2"])
     f_b = build_frame_tuple(stereo_scene["pts1"], stereo_scene["pts2"])
-    ransac = EpipolarRANSAC([f_a, f_b], threshold=1.0, max_iter=300, consensus_ratio=0.3)
+    ransac = EpipolarRANSAC(
+        [f_a, f_b], threshold=1.0, max_iter=300, consensus_ratio=0.3
+    )
     inliers = _run_filter(ransac)
     assert len(inliers) == 2
     assert inliers[0].shape == (contaminated_scene["n_total"],)
@@ -180,6 +185,10 @@ def test_ransac_refined_f_better_than_minimal_f(contaminated_scene, K, rng):
     F_minimal = eight_point_fundamental_matrix(pts1[inlier_idx], pts2[inlier_idx])
 
     true_inliers = s["inlier_mask"]
-    err_refined = sampson_distance(F_refined, pts1[true_inliers], pts2[true_inliers]).mean()
-    err_minimal = sampson_distance(F_minimal, pts1[true_inliers], pts2[true_inliers]).mean()
+    err_refined = sampson_distance(
+        F_refined, pts1[true_inliers], pts2[true_inliers]
+    ).mean()
+    err_minimal = sampson_distance(
+        F_minimal, pts1[true_inliers], pts2[true_inliers]
+    ).mean()
     assert err_refined < err_minimal

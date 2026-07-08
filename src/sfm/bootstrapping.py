@@ -4,26 +4,25 @@ import numpy as np
 from matplotlib import pyplot as plt
 from scipy.optimize import least_squares
 
+from sfm.data import CameraDatabase, FrameTuple, Structure
 from sfm.epipolar_geometry import (
     decompose_essential_matrix,
     select_pose_by_cheirality,
 )
-from sfm.data import FrameTuple, Structure
 
 
 class StructureBootstrap:
-    def __init__(self, frame_tuples: List[FrameTuple], K: np.ndarray) -> None:
+    def __init__(self, frame_tuples: List[FrameTuple], cam_db: CameraDatabase) -> None:
         self.frame_tuples = frame_tuples
-        assert K.shape == (3, 3)
-        self.K = K
+        self.cam_db = cam_db
 
-    def _compute_essential_matrix(self, F: np.ndarray):
+    @staticmethod
+    def _compute_essential_matrix(F: np.ndarray, K_a: np.ndarray, K_b: np.ndarray):
         assert F.shape == (3, 3)
-        K_rank3 = self.K.T @ F @ self.K
-        U, S, Vh = np.linalg.svd(K_rank3)
+        E = K_b.T @ F @ K_a
+        U, S, Vh = np.linalg.svd(E)
         S[-1] = 0
-        K_rank2 = U @ np.diag(S) @ Vh
-        return K_rank2
+        return U @ np.diag(S) @ Vh
 
     def init(self, inlier_observations: List[np.ndarray]) -> Structure:
         """
@@ -37,48 +36,38 @@ class StructureBootstrap:
         f_tpl = self.frame_tuples[0]
         inliers = inlier_observations[0]
         assert f_tpl.fundamental_matrix is not None
-        E = self._compute_essential_matrix(f_tpl.fundamental_matrix)
+        K_a = self.cam_db.get_K(f_tpl.frame_a_features.img_path)
+        K_b = self.cam_db.get_K(f_tpl.frame_b_features.img_path)
+        E = self._compute_essential_matrix(f_tpl.fundamental_matrix, K_a, K_b)
         f_tpl.essential_matrix = E
         cam_poses = decompose_essential_matrix(E)
-        X_a = np.vstack(
-            [np.array(f.pt) for f in f_tpl.frame_a_features.keypoints]
-        )
-        X_b = np.vstack(
-            [np.array(f.pt) for f in f_tpl.frame_b_features.keypoints]
-        )
+        X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
+        X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
         X_a = X_a[[m.queryIdx for m in f_tpl.frame_a_to_b_matches]]
         X_b = X_b[[m.trainIdx for m in f_tpl.frame_a_to_b_matches]]
         assert X_a.shape == X_b.shape
         pose_a = np.hstack([np.eye(3), np.zeros((3, 1))])
-        P1 = self.K @ pose_a
+        P1 = K_a @ pose_a
 
         best_cam_pose, best_triangulated_pts = select_pose_by_cheirality(
-            cam_poses, X_a[inliers], X_b[inliers], P1, self.K
+            cam_poses, X_a[inliers], X_b[inliers], P1, K_b
         )
         if best_cam_pose is None:
             raise ValueError("Could not find a camera pose for camera B!")
         if best_triangulated_pts is None:
             raise ValueError("Could not triangulate points!")
 
-        matches_a = np.array(
-            [m.queryIdx for m in f_tpl.frame_a_to_b_matches]
-        )
-        matches_b = np.array(
-            [m.trainIdx for m in f_tpl.frame_a_to_b_matches]
-        )
+        matches_a = np.array([m.queryIdx for m in f_tpl.frame_a_to_b_matches])
+        matches_b = np.array([m.trainIdx for m in f_tpl.frame_a_to_b_matches])
         corresp_a = {
             (0, x): j
-            for (x, j) in zip(
-                matches_a[inliers], range(len(best_triangulated_pts))
-            )
+            for (x, j) in zip(matches_a[inliers], range(len(best_triangulated_pts)))
         }
         corresp_b = {
             (1, x): j
-            for (x, j) in zip(
-                matches_b[inliers], range(len(best_triangulated_pts))
-            )
+            for (x, j) in zip(matches_b[inliers], range(len(best_triangulated_pts)))
         }
-        P2 = self.K @ best_cam_pose
+        P2 = K_b @ best_cam_pose
 
         # Refine 3D points via non-linear triangulation
         def reproj_err(x: np.ndarray, *args, **kwargs) -> np.ndarray:
@@ -242,9 +231,7 @@ class StructureBootstrap:
 
         ax.set_xlabel("X")
         ax.set_ylabel("Z")
-        ax.set_title(
-            "Triangulated 3D Points and Camera Frustums (seen from Y axis)"
-        )
+        ax.set_title("Triangulated 3D Points and Camera Frustums (seen from Y axis)")
         ax.legend()
         plt.show()
 

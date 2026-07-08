@@ -5,8 +5,8 @@ import numpy as np
 from tqdm import tqdm
 
 from sfm import fqs
+from sfm.data import CameraDatabase, FrameTuple, Structure
 from sfm.epipolar_geometry import triangulate_pts_dlt
-from sfm.data import FrameTuple, Structure
 from sfm.utils import normalize
 
 
@@ -14,18 +14,16 @@ class PerspectiveNPoint:
     def __init__(
         self,
         frame_tuples: List[FrameTuple],
-        K: np.ndarray,
+        cam_db: CameraDatabase,
         ransac_inlier_threshold: float = 0.01,
         ransac_iter: int = 1000,
     ) -> None:
         self.frame_tuples = frame_tuples
-        assert K.shape == (3, 3)
-        self.K = K
-        self.K_inv = np.linalg.inv(K)
+        self.cam_db = cam_db
         self.max_iter_ransac = ransac_iter
         self.inlier_threshold = ransac_inlier_threshold
 
-    def _solve_p3p(self, world_pts: np.ndarray, img_pts: np.ndarray):
+    def _solve_p3p(self, world_pts: np.ndarray, img_pts: np.ndarray, K: np.ndarray):
         """
         This is the P3P implementation of Kneip et al, CVPR 2011 (https://rpg.ifi.uzh.ch/docs/CVPR11_kneip.pdf)
         """
@@ -38,10 +36,11 @@ class PerspectiveNPoint:
             np.concatenate([img_pts[1], np.ones((1,))]),
             np.concatenate([img_pts[2], np.ones((1,))]),
         )
+        K_inv = np.linalg.inv(K)
         f1, f2, f3 = (
-            normalize(self.K_inv @ u1),
-            normalize(self.K_inv @ u2),
-            normalize(self.K_inv @ u3),
+            normalize(K_inv @ u1),
+            normalize(K_inv @ u2),
+            normalize(K_inv @ u3),
         )
         tx = f1
         tz = normalize(np.cross(f1, f2))
@@ -171,7 +170,7 @@ class PerspectiveNPoint:
                 C, R = candidate
                 t = -R @ C  # TODO: Correct??
                 pose = np.hstack([R, t[:, None]])
-                P = self.K @ pose
+                P = K @ pose
                 cam_b_proj = p4_homo @ P.T  # (3)
                 cam_b_proj = (cam_b_proj / cam_b_proj[-1])[:2]
                 reproj_err = (cam_b_proj - u4).sum() ** 2
@@ -215,9 +214,9 @@ class PerspectiveNPoint:
             # matches to previous frame:
             inliers = inlier_observations[i]
             f_tpl = self.frame_tuples[i]
-            matches_a = np.array(
-                [m.queryIdx for m in f_tpl.frame_a_to_b_matches]
-            )
+            K_a = self.cam_db.get_K(f_tpl.frame_a_features.img_path)
+            K_b = self.cam_db.get_K(f_tpl.frame_b_features.img_path)
+            matches_a = np.array([m.queryIdx for m in f_tpl.frame_a_to_b_matches])
             # matches_b = np.array([m.trainIdx for m in f_tpl.frame_a_to_b_matches])
             # Filter matches by the indices of those in common with the previous
             # pair:
@@ -246,12 +245,8 @@ class PerspectiveNPoint:
                 desc="Finding pose with RANSAC-P3P...",
             )
             cam_pose_a = structure.poses[i * 2 - 1]
-            X_a = np.vstack(
-                [np.array(f.pt) for f in f_tpl.frame_a_features.keypoints]
-            )
-            X_b = np.vstack(
-                [np.array(f.pt) for f in f_tpl.frame_b_features.keypoints]
-            )
+            X_a = np.vstack([np.array(f.pt) for f in f_tpl.frame_a_features.keypoints])
+            X_b = np.vstack([np.array(f.pt) for f in f_tpl.frame_b_features.keypoints])
             best_solution, best_inlier_count = None, 0
             points3D = None
             for _ in pbar:
@@ -260,14 +255,12 @@ class PerspectiveNPoint:
                 # pts2D_id = list(corresp.keys())[idx][1]  # (cam_id, kp_id)
                 pts2D = X_b[comm2[idx]]
                 pts3D = structure.points3D[last_frame_pts_offset + idx]
-                cam_pose_b = self._solve_p3p(pts3D, pts2D)
+                cam_pose_b = self._solve_p3p(pts3D, pts2D, K_b)
                 if cam_pose_b is None:
                     continue
-                P1 = self.K @ cam_pose_a
-                P2 = self.K @ cam_pose_b
-                points3D = triangulate_pts_dlt(
-                    X_a[comm1], X_b[comm2], P1, P2
-                )
+                P1 = K_a @ cam_pose_a
+                P2 = K_b @ cam_pose_b
+                points3D = triangulate_pts_dlt(X_a[comm1], X_b[comm2], P1, P2)
                 x_homo = np.concatenate(
                     [points3D, np.ones((points3D.shape[0], 1))], axis=1
                 )
@@ -275,10 +268,7 @@ class PerspectiveNPoint:
                 u, v = X_b[comm2].T
                 cam_b_proj = x_homo @ P2.T  # (N, 3)
                 cam_b_proj = (cam_b_proj / cam_b_proj[:, -1][:, None])[:, :2]
-                proj_errors = (
-                    (u - cam_b_proj[:, 0]) ** 2
-                    + (v - cam_b_proj[:, 1]) ** 2
-                )
+                proj_errors = (u - cam_b_proj[:, 0]) ** 2 + (v - cam_b_proj[:, 1]) ** 2
                 inlier_mask = proj_errors < self.inlier_threshold
                 if inlier_mask.sum() > best_inlier_count:
                     best_solution = cam_pose_b

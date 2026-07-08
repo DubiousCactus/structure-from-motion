@@ -118,10 +118,11 @@ def contaminated_scene(K, rng):
     }
 
 
-def build_frame_tuple(pts1: np.ndarray, pts2: np.ndarray, frame_a_id=0, frame_b_id=1) -> FrameTuple:
+def build_frame_tuple(
+    pts1: np.ndarray, pts2: np.ndarray, frame_a_id=0, frame_b_id=1
+) -> FrameTuple:
     """Build a 1-to-1 FrameTuple from two (N, 2) pixel-coordinate arrays."""
     feats_a = ImageFeatures(make_keypoints(pts1), None, "frame_a")
     feats_b = ImageFeatures(make_keypoints(pts2), None, "frame_b")
     matches = make_matches(pts1.shape[0])
     return FrameTuple(frame_a_id, frame_b_id, feats_a, feats_b, matches)
-

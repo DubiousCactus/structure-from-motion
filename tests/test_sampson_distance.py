@@ -1,4 +1,3 @@
-import cv2 as cv
 import numpy as np
 
 from sfm.epipolar_geometry import eight_point_fundamental_matrix, sampson_distance
@@ -26,8 +25,12 @@ def test_sampson_distance_increases_with_noise(stereo_scene, rng):
     """Larger pixel perturbations must yield larger Sampson distances on average."""
     s = stereo_scene
     F = eight_point_fundamental_matrix(s["pts1"], s["pts2"])
-    small = sampson_distance(F, s["pts1"], s["pts2"] + rng.normal(0, 0.5, s["pts2"].shape))
-    large = sampson_distance(F, s["pts1"], s["pts2"] + rng.normal(0, 10.0, s["pts2"].shape))
+    small = sampson_distance(
+        F, s["pts1"], s["pts2"] + rng.normal(0, 0.5, s["pts2"].shape)
+    )
+    large = sampson_distance(
+        F, s["pts1"], s["pts2"] + rng.normal(0, 10.0, s["pts2"].shape)
+    )
     assert large.mean() > small.mean()
 
 

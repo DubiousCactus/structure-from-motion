@@ -4,6 +4,7 @@ import io
 import numpy as np
 
 from sfm.bootstrapping import StructureBootstrap
+from sfm.data import CameraDatabase
 from sfm.epipolar_geometry import EpipolarRANSAC
 from conftest import build_frame_tuple
 
@@ -19,11 +20,15 @@ def _build_frame_tuple(stereo_scene):
     return f_tpl
 
 
+def _cam_db(stereo_scene):
+    return CameraDatabase.from_single(stereo_scene["K"], ["frame_a", "frame_b"])
+
+
 def test_bootstrap_recovers_rotation(stereo_scene):
     """StructureBootstrap.init must recover camera B's rotation exactly."""
     s = stereo_scene
     f_tpl = _build_frame_tuple(s)
-    boot = StructureBootstrap([f_tpl], s["K"])
+    boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -38,7 +43,7 @@ def test_bootstrap_recovers_translation_direction(stereo_scene):
     """E-decomposition only fixes translation up to scale; its direction must match."""
     s = stereo_scene
     f_tpl = _build_frame_tuple(s)
-    boot = StructureBootstrap([f_tpl], s["K"])
+    boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -55,7 +60,7 @@ def test_bootstrap_pose_a_is_identity(stereo_scene):
     """Camera A must be anchored at the world origin [I|0]."""
     s = stereo_scene
     f_tpl = _build_frame_tuple(s)
-    boot = StructureBootstrap([f_tpl], s["K"])
+    boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -69,7 +74,7 @@ def test_bootstrap_points_match_ground_truth_up_to_scale(stereo_scene):
     """Triangulated points must match the ground-truth cloud up to a single global scale."""
     s = stereo_scene
     f_tpl = _build_frame_tuple(s)
-    boot = StructureBootstrap([f_tpl], s["K"])
+    boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -87,7 +92,7 @@ def test_bootstrap_refinement_improves_or_matches_linear(stereo_scene):
     """Non-linear triangulation should not be worse than the linear estimate."""
     s = stereo_scene
     f_tpl = _build_frame_tuple(s)
-    boot = StructureBootstrap([f_tpl], s["K"])
+    boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
     with contextlib.redirect_stdout(io.StringIO()):

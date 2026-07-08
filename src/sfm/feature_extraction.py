@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from sfm.bootstrapping import StructureBootstrap
 from sfm.bundle_adjustment import BundleAdjustment
-from sfm.data import FrameTuple, ImageFeatures
+from sfm.data import CameraDatabase, FrameTuple, ImageFeatures
 from sfm.epipolar_geometry import EpipolarRANSAC
 from sfm.pnp import PerspectiveNPoint
 
@@ -17,9 +17,7 @@ def extract_frames_impl(video_path: str, output_folder: str):
     cap = cv.VideoCapture(video_path)
     os.makedirs(output_folder, exist_ok=True)
     frame_count = 0
-    bar = tqdm(
-        total=int(cap.get(cv.CAP_PROP_FRAME_COUNT)), desc="Extracting frames"
-    )
+    bar = tqdm(total=int(cap.get(cv.CAP_PROP_FRAME_COUNT)), desc="Extracting frames")
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -102,10 +100,7 @@ def extract_and_match_impl(
     if debug:
         ransac.draw_matches()
     assert all(
-        [
-            isinstance(f_tpl.fundamental_matrix, np.ndarray)
-            for f_tpl in frame_tuples
-        ]
+        [isinstance(f_tpl.fundamental_matrix, np.ndarray) for f_tpl in frame_tuples]
     ), "Fundamental matrix not computed for all frames during RANSAC"
 
     # INFO: Stage 4: 2D-2D Camera pose prediction via Essential matrix decomposition and
@@ -113,32 +108,31 @@ def extract_and_match_impl(
     # decomposing the Essential matrix, and filtering the valid pose via the Cheirality
     # condition. Here, we only bootstrap the 3D structure.
     if intrinsics_path is None:
-        # TODO: Load focal length from EXIF of images if available. If not, come up with
-        # a rough initialization and optimize for it in bundle adjustment. Another way
-        # is to estimate the focal length from the hommography
+        # TODO: Estimate the focal length from the hommography
         # (https://imkaywu.github.io/blog/2017/10/focal-from-homography/), but this
         # assumes that the two camera centers are fixed and the caameras only undergo
         # rotations. In practice, it seems everyone uses UPnP
         # (https://openreview.net/pdf?id=PbMNl2kC0u) or a flavour of PnPf (www.researchgate.net/publication/354289451_Efficient_DLT-Based_Method_for_Solving_PnP_PnPf_and_PnPfr_Problems)
         raise NotImplementedError(
             "Intrinsics estimation not implemented yet! Please provide the intrinsics matrix"
+            + " by running the extract-intrinsics command."
         )
     else:
-        K = np.load(intrinsics_path)[0]
+        cam_db = CameraDatabase.load(intrinsics_path)
     # WARN: How about scale ambiguity that comes with E-decomposition (2D-2D
     # correspondances and pose prediction)? Well, unfortunately that's just a thing of
     # monocular SfM. We just *can't recover absolute scale from images alone*. However,
     # chaining E-decomposition for each new camera *will lead to scale drift*. To remedy
     # this, we use PnP!
 
-    bootstrap = StructureBootstrap(frame_tuples, K)
+    bootstrap = StructureBootstrap(frame_tuples, cam_db)
     structure = bootstrap.init(inliers)
     if debug:
         bootstrap.draw_triangulation_3D()
     # INFO: Stage 5: register all images and solve all camera poses using PnP. Given the
     # initial 3D points, register each new image in the scene using 3D-2D
     # correspondances.
-    pnp = PerspectiveNPoint(frame_tuples, K)
+    pnp = PerspectiveNPoint(frame_tuples, cam_db)
     pnp.fit(structure, inliers)
     assert all(
         [

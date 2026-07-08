@@ -50,9 +50,7 @@ def hartley_normalize(pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return normalized, T
 
 
-def eight_point_fundamental_matrix(
-    pts1: np.ndarray, pts2: np.ndarray
-) -> np.ndarray:
+def eight_point_fundamental_matrix(pts1: np.ndarray, pts2: np.ndarray) -> np.ndarray:
     """Estimate the fundamental matrix from >= 8 point correspondances via the
     normalized 8-point algorithm.
 
@@ -109,9 +107,7 @@ def eight_point_fundamental_matrix(
     return F
 
 
-def sampson_distance(
-    F: np.ndarray, pts1: np.ndarray, pts2: np.ndarray
-) -> np.ndarray:
+def sampson_distance(F: np.ndarray, pts1: np.ndarray, pts2: np.ndarray) -> np.ndarray:
     """Sampson (first-order) approximation of the geometric epipolar error.
 
     The Sampson distance is a scale-independent, first-order approximation of
@@ -134,12 +130,7 @@ def sampson_distance(
     Fx1 = p1h @ F.T  # (F x1)^T
     Ftx2 = p2h @ F  # (F^T x2)^T
     numer = (p2h * Fx1).sum(axis=1) ** 2
-    denom = (
-        Fx1[:, 0] ** 2
-        + Fx1[:, 1] ** 2
-        + Ftx2[:, 0] ** 2
-        + Ftx2[:, 1] ** 2
-    )
+    denom = Fx1[:, 0] ** 2 + Fx1[:, 1] ** 2 + Ftx2[:, 0] ** 2 + Ftx2[:, 1] ** 2
     return numer / np.maximum(denom, 1e-12)
 
 
@@ -366,9 +357,7 @@ class EpipolarRANSAC:
                 if n_inliers < consensus_min:
                     continue
                 this_err = err[this_inliers].mean()
-                pbar.set_postfix(
-                    {"#inliers": n_inliers.item(), "Total err": this_err}
-                )
+                pbar.set_postfix({"#inliers": n_inliers.item(), "Total err": this_err})
 
                 if n_inliers > best_n_inliers or (
                     n_inliers == best_n_inliers and this_err < best_fit_err

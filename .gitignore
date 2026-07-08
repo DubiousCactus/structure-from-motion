@@ -12,3 +12,4 @@ test_vid
 svd.png
 *.npy
 *.jpg
+data/

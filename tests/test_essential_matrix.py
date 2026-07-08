@@ -11,12 +11,14 @@ from sfm.epipolar_geometry import (
 
 def _F(stereo_scene) -> np.ndarray:
     ransac = EpipolarRANSAC([])
-    return ransac._compute_fundamental_matrix(stereo_scene["pts1"], stereo_scene["pts2"])
+    return ransac._compute_fundamental_matrix(
+        stereo_scene["pts1"], stereo_scene["pts2"]
+    )
 
 
 def _E(stereo_scene) -> np.ndarray:
-    boot = StructureBootstrap([], stereo_scene["K"])
-    return boot._compute_essential_matrix(_F(stereo_scene))
+    K = stereo_scene["K"]
+    return StructureBootstrap._compute_essential_matrix(_F(stereo_scene), K, K)
 
 
 def _normalized_rays(K, pts):
@@ -81,7 +83,10 @@ def test_recover_pose_matches_opencv(stereo_scene):
     s = stereo_scene
     E = _E(s)
     _, R_cv, t_cv, _ = cv.recoverPose(
-        E, s["pts1"].astype(np.float32), s["pts2"].astype(np.float32), s["K"].astype(np.float32)
+        E,
+        s["pts1"].astype(np.float32),
+        s["pts2"].astype(np.float32),
+        s["K"].astype(np.float32),
     )
 
     candidates = decompose_essential_matrix(E)
@@ -145,7 +150,9 @@ def test_select_pose_by_cheirality_returns_none_for_degenerate(stereo_scene):
     bad_pose = np.hstack([R_away, t_away[:, None]])
     bad_candidates = [bad_pose] * 4
     P1 = s["K"] @ np.hstack([np.eye(3), np.zeros((3, 1))])
-    pts2_bad = (s["K"] @ bad_pose @ np.hstack([s["pts3D"], np.ones((s["pts3D"].shape[0], 1))]).T).T
+    pts2_bad = (
+        s["K"] @ bad_pose @ np.hstack([s["pts3D"], np.ones((s["pts3D"].shape[0], 1))]).T
+    ).T
     pts2_bad = pts2_bad[:, :2] / pts2_bad[:, 2:3]
     best_pose, best_pts = select_pose_by_cheirality(
         bad_candidates, s["pts1"], pts2_bad, P1, s["K"]
