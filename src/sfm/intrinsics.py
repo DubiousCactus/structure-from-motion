@@ -11,7 +11,7 @@ from sfm.data import CameraDatabase
 
 def read_exif(image_path: str) -> dict:
     img: Image.Image = Image.open(image_path)
-    exif_data = img.getexif()
+    exif_data = img._getexif()
     if exif_data is None:
         raise ValueError(f"No EXIF data found in {image_path}")
     return {ExifTags.TAGS.get(k, k): v for k, v in exif_data.items()}
