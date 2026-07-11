@@ -20,3 +20,57 @@ below threshold), it's ok. We can try after we have registered more images and
 triangulated more points. The thing is to properly keep track of 2D-3D correspondences.
 - [ ] **Local BA frequently, global BA at the end**: jointly refine poses and points;
 prune observations with high reprojection error.
+
+
+Graph datastructure:
+```python
+@dataclass
+class ImageNode:
+    image_id: int
+    features: ImageFeatures
+    pose: np.ndarray | None = None       # [R | t] after registration
+    registered: bool = False
+
+@dataclass
+class PairEdge:
+    image_a: int                         # always image_a < image_b
+    image_b: int
+    matches: list[cv.DMatch]             # descriptor matches
+    inlier_mask: np.ndarray | None       # aligned with matches
+    F: np.ndarray | None
+    E: np.ndarray | None
+    inlier_count: int = 0
+    median_sampson_px2: float = np.inf
+    median_parallax_deg: float = 0.0
+    usable_for_bootstrap: bool = False
+
+    @property
+    def inlier_matches(self) -> list[cv.DMatch]:
+        assert self.inlier_mask is not None
+        return [m for m, keep in zip(self.matches, self.inlier_mask) if keep]
+
+@dataclass
+class ViewGraph:
+    nodes: dict[int, ImageNode]
+    edges: dict[tuple[int, int], PairEdge]  # canonical key: (min(i,j), max(i,j))
+    adjacency: dict[int, set[int]]
+
+Observation = tuple[int, int]  # (image_id, keypoint_id)
+
+@dataclass
+class Track:
+    id: int
+    observations: dict[int, int]  # image_id -> keypoint_id
+    point3d: np.ndarray | None = None
+    reprojection_error: float = np.inf
+```
+
+-edges[(min(i, j), max(i, j))]: pair lookup and edge quality.
+-adjacency[i]: candidate views for matching, triangulation, and propagation.
+-observation_to_track: dict[Observation, int]: resolves (image_id, keypoint_id) to a track, allowing O(1) construction of PnP correspondences.
+-tracks: dict[int, Track]: 3D landmark lifecycle and multi-view observations.
+
+Merge tracks with a disjoint-set/union-find over observations while processing verified
+inlier correspondences. Enforce the invariant that a track has at most one keypoint from
+each image; skip a union that would violate it. This avoids creating invalid tracks from
+conflicting pairwise matches.
