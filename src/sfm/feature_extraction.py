@@ -1,10 +1,9 @@
 import os
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import cv2 as cv
 import numpy as np
 from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 from sfm.bootstrapping import StructureBootstrap
 from sfm.bundle_adjustment import BundleAdjustment
@@ -12,12 +11,21 @@ from sfm.data import CameraDatabase, FrameTuple, ImageFeatures
 from sfm.epipolar_geometry import EpipolarRANSAC
 from sfm.pnp import PerspectiveNPoint
 
+if TYPE_CHECKING:
+    from sfm.tui import SfmDisplay
 
-def extract_frames_impl(video_path: str, output_folder: str):
+
+def extract_frames_impl(
+    video_path: str,
+    output_folder: str,
+    display: Optional["SfmDisplay"] = None,
+):
     cap = cv.VideoCapture(video_path)
     os.makedirs(output_folder, exist_ok=True)
     frame_count = 0
-    bar = tqdm(total=int(cap.get(cv.CAP_PROP_FRAME_COUNT)), desc="Extracting frames")
+    total = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
+    if display:
+        display.begin_extraction(total)
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -25,10 +33,11 @@ def extract_frames_impl(video_path: str, output_folder: str):
         frame_filename = f"{output_folder}/frame_{frame_count:04d}.jpg"
         cv.imwrite(frame_filename, frame)
         frame_count += 1
-        bar.update(1)
-    bar.close()
+        if display:
+            display.update_extraction(frame_count, 0)
     cap.release()
-    print(f"Extracted {frame_count} frames to {output_folder}")
+    if display:
+        display.finish_extraction()
 
 
 def extract_and_match_impl(
@@ -36,28 +45,31 @@ def extract_and_match_impl(
     intrinsics_path: Optional[str] = None,
     max_frames: Optional[int] = None,
     debug: Optional[bool] = False,
+    display: Optional["SfmDisplay"] = None,
 ):
     if intrinsics_path is not None and not os.path.isfile(intrinsics_path):
         raise FileNotFoundError(f"Intrinsics not found at {intrinsics_path}")
     # INFO: Stage 1: feature extraction using ORB
-    orb = cv.ORB_create(nfeatures=1000, scaleFactor=1.2, nlevels=8)
-    # surf = cv.xfeatures2d.SURF_create()
+    orb = cv.ORB_create(scaleFactor=1.2, nlevels=8)
+    frame_files = sorted(os.listdir(frames_path))
+    total_frames = len(frame_files) if max_frames is None else min(max_frames, len(frame_files))
+    if display:
+        display.begin_extraction(total_frames)
     frame_features = []
-    for i, frame_file in tqdm(
-        enumerate(sorted(os.listdir(frames_path))), desc="Extracting features"
-    ):
+    for i, frame_file in enumerate(frame_files):
         if i == max_frames:
             break
         frame_path = os.path.join(frames_path, frame_file)
         img = cv.imread(frame_path, cv.IMREAD_GRAYSCALE)
-        # kp = orb.detect(img, None)
-        # kp, des = orb.compute(img, kp)
         kp, des = orb.detectAndCompute(img, None)
-        # kp, des = surf.detectAndCompute(img, None)
         frame_features.append(ImageFeatures(kp, des, frame_path))
+        if display:
+            display.update_extraction(i, len(kp))
         if debug and i == 0:
             img2 = cv.drawKeypoints(img, kp, None, color=(0, 255, 0), flags=0)
             plt.imshow(img2), plt.show()
+    if display:
+        display.finish_extraction()
 
     # INFO: Stage 2: KNN-based feature matching with FLANN
     FLANN_INDEX_LSH = 6
@@ -69,33 +81,25 @@ def extract_and_match_impl(
     )  # 2
     search_params = dict(checks=50)  # or pass empty dictionary
     frame_tuples = []
+    total_pairs = len(frame_features) - 1
+    if display:
+        display.begin_matching(total_pairs)
 
     flann = cv.FlannBasedMatcher(index_params, search_params)
     for i in range(1, len(frame_features)):
         f1, f2 = frame_features[i - 1], frame_features[i]
         matches = flann.knnMatch(f1.descriptors, f2.descriptors, k=2)
-        # INFO: we call knnMatch(query=f1, train=f2) and get:
-        # DMatch: .query_id, .train_id, .train_img_id, .distance
-        # For RANSAC -- and for the rest -- we'll want something more structured, ie:
-        # Match{ .img_a_id, .img_a_feature_id, .img_b_id, .img_b_feature_id, .dist }
-        # and a list of [Match], and a list of [Feature] but the ids must match.
-        # Or potentially something simpler, all packaged into a frame tuple:
-        # FrameTuple{ .frame_a_id, .frame_a_features, .frame_b_id, .frame_b_features, .matches_a_to_b, }
-
         good_matches = []
         for j, match in enumerate(matches):
             if len(match) < 2:
                 continue
             m, n = match
-            if m.distance < 0.9 * n.distance:
+            if m.distance < 0.85 * n.distance:
                 good_matches.append(m)
         frame_tuples.append(FrameTuple(i - 1, i, f1, f2, good_matches))
 
     # INFO: Stage 3: RANSAC outlier removal via the epipolar constraint.
-    # Now that we've got good candidate matches, we can start filtering them with
-    # RANSAC and the Fundamental matrix, ie if x'TFx ~= 0 the match is good, otherwise
-    # it's an outlier.
-    ransac = EpipolarRANSAC(frame_tuples)
+    ransac = EpipolarRANSAC(frame_tuples, display=display, stats=display.stats if display else None)
     inliers: List[np.ndarray] = ransac.filter()
     if debug:
         ransac.draw_matches()
@@ -128,14 +132,14 @@ def extract_and_match_impl(
     # chaining E-decomposition for each new camera *will lead to scale drift*. To remedy
     # this, we use PnP!
 
-    bootstrap = StructureBootstrap(frame_tuples, cam_db)
+    bootstrap = StructureBootstrap(frame_tuples, cam_db, display=display, stats=display.stats if display else None)
     structure = bootstrap.init(inliers)
     if debug:
         bootstrap.draw_triangulation_3D()
     # INFO: Stage 5: register all images and solve all camera poses using PnP. Given the
     # initial 3D points, register each new image in the scene using 3D-2D
     # correspondances.
-    pnp = PerspectiveNPoint(frame_tuples, cam_db)
+    pnp = PerspectiveNPoint(frame_tuples, cam_db, display=display, stats=display.stats if display else None)
     pnp.fit(structure, inliers)
     assert all(
         [

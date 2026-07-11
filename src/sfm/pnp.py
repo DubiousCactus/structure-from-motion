@@ -1,12 +1,14 @@
-from typing import List
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
-from tqdm import tqdm
 
 from sfm import fqs
 from sfm.data import CameraDatabase, FrameTuple, Structure
 from sfm.epipolar_geometry import triangulate_pts_dlt
 from sfm.utils import normalize
+
+if TYPE_CHECKING:
+    from sfm.tui import PipelineStats, SfmDisplay
 
 
 class PerspectiveNPoint:
@@ -17,12 +19,16 @@ class PerspectiveNPoint:
         ransac_inlier_threshold: float = 0.01,
         ransac_iter: int = 1000,
         consensus_ratio: float = 0.5,
+        display: Optional["SfmDisplay"] = None,
+        stats: Optional["PipelineStats"] = None,
     ) -> None:
         self.frame_tuples = frame_tuples
         self.cam_db = cam_db
         self.max_iter_ransac = ransac_iter
         self.inlier_threshold = ransac_inlier_threshold
         self.consensus_ratio = consensus_ratio
+        self.display = display
+        self.stats = stats
 
     def _solve_p3p(self, world_pts: np.ndarray, img_pts: np.ndarray, K: np.ndarray):
         """
@@ -220,9 +226,7 @@ class PerspectiveNPoint:
         best_points3D = None
         n = len(pts3D_candidates)
 
-        for _ in tqdm(
-            range(self.max_iter_ransac), desc="Finding pose with RANSAC-P3P..."
-        ):
+        for it in range(self.max_iter_ransac):
             idx = np.random.choice(n, 4, replace=False)
             cam_pose_b = self._solve_p3p(pts3D_candidates[idx], pts2D_b[idx], K_b)
             if cam_pose_b is None:
@@ -332,3 +336,8 @@ class PerspectiveNPoint:
             f_tpl.cam_pose_a = cam_pose_a
             f_tpl.cam_pose_b = best_solution
             last_frame_pts_offset += len(in_common)
+            if self.display and self.stats:
+                self.display.update_pnp(
+                    cameras_registered=len(structure.poses),
+                    total_3d_points=len(structure.points3D),
+                )

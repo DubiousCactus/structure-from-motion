@@ -1,22 +1,8 @@
-import contextlib
-import io
-
 import cv2 as cv
 import numpy as np
 
 from sfm.data import CameraDatabase
 from sfm.pnp import PerspectiveNPoint
-
-
-def _run_ransac_pnp(pnp, pts3D, pts2D_a, pts2D_b, K_a, K_b, pose_a, consensus_min):
-    """Call _ransac_pnp with stdout/stderr suppressed (no tqmi clutter)."""
-    with (
-        contextlib.redirect_stdout(io.StringIO()),
-        contextlib.redirect_stderr(io.StringIO()),
-    ):
-        return pnp._ransac_pnp(
-            pts3D, pts2D_a, pts2D_b, K_a, K_b, pose_a, consensus_min
-        )
 
 
 def _reproj_error(K, pose, pts3D, pts2D):
@@ -37,8 +23,7 @@ def test_pnp_ransac_recovers_pose(pnp_scene):
     )
     consensus_min = max(4, int(0.3 * s["n_total"]))
 
-    pose, pts3D = _run_ransac_pnp(
-        pnp,
+    pose, pts3D = pnp._ransac_pnp(
         s["pts3D"],
         s["pts2D_a"],
         s["pts2D_b"],
@@ -68,8 +53,7 @@ def test_pnp_ransac_pure_inliers(pnp_scene):
     )
     consensus_min = max(4, int(0.3 * mask.sum()))
 
-    pose, pts3D = _run_ransac_pnp(
-        pnp,
+    pose, pts3D = pnp._ransac_pnp(
         s["pts3D"][mask],
         s["pts2D_a"][mask],
         s["pts2D_b"][mask],
@@ -94,8 +78,7 @@ def test_pnp_ransac_matches_opencv(pnp_scene):
     )
     consensus_min = max(4, int(0.3 * s["n_total"]))
 
-    pose, pts3D = _run_ransac_pnp(
-        pnp,
+    pose, pts3D = pnp._ransac_pnp(
         s["pts3D"],
         s["pts2D_a"],
         s["pts2D_b"],
@@ -140,8 +123,7 @@ def test_pnp_ransac_threshold_controls_strictness(pnp_scene, rng):
     pnp_strict = PerspectiveNPoint(
         [], cam_db, ransac_inlier_threshold=1e-8, ransac_iter=2000
     )
-    pose_strict, _ = _run_ransac_pnp(
-        pnp_strict,
+    pose_strict, _ = pnp_strict._ransac_pnp(
         s["pts3D"],
         s["pts2D_a"],
         noisy_pts2D_b,
@@ -156,8 +138,7 @@ def test_pnp_ransac_threshold_controls_strictness(pnp_scene, rng):
     pnp_loose = PerspectiveNPoint(
         [], cam_db, ransac_inlier_threshold=1e6, ransac_iter=500
     )
-    pose_loose, _ = _run_ransac_pnp(
-        pnp_loose,
+    pose_loose, _ = pnp_loose._ransac_pnp(
         s["pts3D"],
         s["pts2D_a"],
         noisy_pts2D_b,
@@ -178,8 +159,7 @@ def test_pnp_ransac_insufficient_inliers(pnp_scene):
     )
     consensus_min = 10_000  # far more than available points
 
-    pose, pts3D = _run_ransac_pnp(
-        pnp,
+    pose, pts3D = pnp._ransac_pnp(
         s["pts3D"],
         s["pts2D_a"],
         s["pts2D_b"],

@@ -1,6 +1,3 @@
-import contextlib
-import io
-
 import numpy as np
 
 from sfm.bootstrapping import StructureBootstrap
@@ -31,8 +28,7 @@ def test_bootstrap_recovers_rotation(stereo_scene):
     boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        structure = boot.init([inliers])
+    structure = boot.init([inliers])
 
     R_b = structure.poses[1][:, :3]
     assert np.allclose(R_b, s["R2"], atol=1e-4)
@@ -46,8 +42,7 @@ def test_bootstrap_recovers_translation_direction(stereo_scene):
     boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        structure = boot.init([inliers])
+    structure = boot.init([inliers])
 
     t_b = structure.poses[1][:, 3]
     t_true_dir = s["t2"] / np.linalg.norm(s["t2"])
@@ -63,8 +58,7 @@ def test_bootstrap_pose_a_is_identity(stereo_scene):
     boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        structure = boot.init([inliers])
+    structure = boot.init([inliers])
 
     pose_a = structure.poses[0]
     assert np.allclose(pose_a, np.hstack([np.eye(3), np.zeros((3, 1))]))
@@ -77,8 +71,7 @@ def test_bootstrap_points_match_ground_truth_up_to_scale(stereo_scene):
     boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        structure = boot.init([inliers])
+    structure = boot.init([inliers])
 
     rec = structure.points3D
     gt = s["pts3D"]
@@ -95,8 +88,7 @@ def test_bootstrap_refinement_improves_or_matches_linear(stereo_scene):
     boot = StructureBootstrap([f_tpl], _cam_db(s))
     inliers = np.ones(s["pts3D"].shape[0], dtype=bool)
 
-    with contextlib.redirect_stdout(io.StringIO()):
-        structure = boot.init([inliers])
+    structure = boot.init([inliers])
 
     gt = s["pts3D"]
     lin = f_tpl.triangulated_pts_linear

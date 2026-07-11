@@ -1,4 +1,4 @@
-from typing import List
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -10,11 +10,22 @@ from sfm.epipolar_geometry import (
     select_pose_by_cheirality,
 )
 
+if TYPE_CHECKING:
+    from sfm.tui import PipelineStats, SfmDisplay
+
 
 class StructureBootstrap:
-    def __init__(self, frame_tuples: List[FrameTuple], cam_db: CameraDatabase) -> None:
+    def __init__(
+        self,
+        frame_tuples: List[FrameTuple],
+        cam_db: CameraDatabase,
+        display: Optional["SfmDisplay"] = None,
+        stats: Optional["PipelineStats"] = None,
+    ) -> None:
         self.frame_tuples = frame_tuples
         self.cam_db = cam_db
+        self.display = display
+        self.stats = stats
 
     @staticmethod
     def _compute_essential_matrix(F: np.ndarray, K_a: np.ndarray, K_b: np.ndarray):
@@ -115,6 +126,12 @@ class StructureBootstrap:
         corresp.update(corresp_a)
         corresp.update(corresp_b)
 
+        if self.display and self.stats:
+            self.display.set_bootstrap_result(
+                n_3d_points=len(refined_pts),
+                n_cameras=2,
+            )
+
         return Structure(
             points3D=refined_pts,
             correspondences=corresp,
@@ -169,8 +186,6 @@ class StructureBootstrap:
         pts_linear = f_tpl.triangulated_pts_linear
         pts = f_tpl.triangulated_pts
         assert pts is not None
-        print(f"Drawing {pts.shape[0]} points")
-        print(pts)
         fig = plt.figure(figsize=(12, 10))
         ax = fig.add_subplot(111)
         if pts_linear is not None:
@@ -249,8 +264,6 @@ class StructureBootstrap:
         pts_linear = f_tpl.triangulated_pts_linear
         pts = f_tpl.triangulated_pts
         assert pts is not None
-        print(f"Drawing {pts.shape[0]} points")
-        print(pts)
         center = pts.mean(axis=0)
         scale = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
         if scale == 0:
@@ -287,8 +300,6 @@ class StructureBootstrap:
         t_a = cam_pose_a[:, 3]
         R_b = cam_pose_b[:, :3]
         t_b = cam_pose_b[:, 3]
-        print(f"Cam pose A: R={R_a}, t={t_a}")
-        print(f"Cam pose B: R={R_b}, t={t_b}")
 
         self._draw_camera_frustum(
             ax,

@@ -1,12 +1,14 @@
 import warnings
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import cv2 as cv
 import numpy as np
 from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 from sfm.data import FrameTuple
+
+if TYPE_CHECKING:
+    from sfm.tui import PipelineStats, SfmDisplay
 
 
 def hartley_normalize(pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -281,9 +283,11 @@ class EpipolarRANSAC:
     def __init__(
         self,
         frame_tuples: List[FrameTuple],
-        consensus_ratio: float = 0.5,
+        consensus_ratio: float = 0.1,
         max_iter: int = 1000,
-        threshold: float = 8,
+        threshold: float = 4,
+        display: Optional["SfmDisplay"] = None,
+        stats: Optional["PipelineStats"] = None,
     ):
         self.frame_tuples = frame_tuples
         self.frame_inliers = []
@@ -291,6 +295,8 @@ class EpipolarRANSAC:
         self.consensus_ratio = consensus_ratio
         self.max_iter = max_iter
         self.threshold = threshold
+        self.display = display
+        self.stats = stats
 
     def _compute_fundamental_matrix(
         self, kp1: np.ndarray, kp2: np.ndarray
@@ -309,7 +315,7 @@ class EpipolarRANSAC:
         Returns:
         inliers: List[(N,)] a list of boolean masks for the inliers of each frame
         """
-        for f_tuple in self.frame_tuples:
+        for f_tuple_idx, f_tuple in enumerate(self.frame_tuples):
             inliers, best_fit, best_fit_err, best_n_inliers = None, None, np.inf, 0
             X_a = np.vstack(
                 [np.array(f.pt) for f in f_tuple.frame_a_features.keypoints]
@@ -322,9 +328,18 @@ class EpipolarRANSAC:
             X_b = X_b[[m.trainIdx for m in f_tuple.frame_a_to_b_matches]]
             assert X_a.shape == X_b.shape
             n_pts = X_a.shape[0]
-            print(
-                f"Frame tuple ({f_tuple.frame_a_id},{f_tuple.frame_b_id}) has {n_pts} matches"
-            )
+            if self.display and self.stats:
+                from sfm.tui import PairStats
+
+                pair = PairStats(
+                    pair_label=f"({f_tuple.frame_a_id},{f_tuple.frame_b_id})",
+                    features_a=len(f_tuple.frame_a_features.keypoints),
+                    features_b=len(f_tuple.frame_b_features.keypoints),
+                    raw_matches=n_pts,
+                    good_matches=n_pts,
+                )
+                self.display.update_matching(f_tuple_idx, pair)
+                self.display.begin_ransac(f_tuple_idx)
             if n_pts < 8:
                 warnings.warn(
                     f"Frame tuple ({f_tuple.frame_a_id},{f_tuple.frame_b_id}) does not have enough features!"
@@ -332,8 +347,7 @@ class EpipolarRANSAC:
                 continue
             # consensus_min = int(X_a.shape[0] * self.consensus_ratio)
             consensus_min = max(8, int(self.consensus_ratio * X_a.shape[0]))
-            pbar = tqdm(range(self.max_iter), desc="Finding inliers with RANSAC...")
-            for _ in pbar:
+            for it in range(self.max_iter):
                 # 1. Select hypothetical outliers
                 idx = np.random.choice(n_pts, 8, replace=False)
                 x_a, x_b = X_a[idx], X_b[idx]
@@ -357,7 +371,9 @@ class EpipolarRANSAC:
                 if n_inliers < consensus_min:
                     continue
                 this_err = err[this_inliers].mean()
-                pbar.set_postfix({"#inliers": n_inliers.item(), "Total err": this_err})
+
+                if self.display and self.stats:
+                    self.display.update_ransac(f_tuple_idx, it + 1, int(n_inliers), float(this_err))
 
                 if n_inliers > best_n_inliers or (
                     n_inliers == best_n_inliers and this_err < best_fit_err
@@ -370,7 +386,13 @@ class EpipolarRANSAC:
                     inliers = this_inliers
 
             f_tuple.fundamental_matrix = best_fit
+            f_tuple.inliers = int(best_n_inliers) if best_n_inliers > 0 else 0
             self.frame_inliers.append(inliers)
+            if self.display and self.stats:
+                ratio = f_tuple.inliers / n_pts if n_pts > 0 else 0
+                self.display.finish_ransac_pair(
+                    f_tuple_idx, f_tuple.inliers, ratio, float(best_fit_err) if best_fit_err < np.inf else 0.0
+                )
         return self.frame_inliers
 
     def draw_matches(self):

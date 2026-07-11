@@ -1,6 +1,3 @@
-import contextlib
-import io
-
 import numpy as np
 import pytest
 
@@ -12,21 +9,12 @@ from sfm.epipolar_geometry import (
 from conftest import build_frame_tuple
 
 
-def _run_filter(ransac: EpipolarRANSAC):
-    """Run RANSAC.filter() with stdout (the print) and stderr (tqdm bars) swallowed."""
-    with (
-        contextlib.redirect_stdout(io.StringIO()),
-        contextlib.redirect_stderr(io.StringIO()),
-    ):
-        return ransac.filter()
-
-
 def test_ransac_recovers_inlier_mask(contaminated_scene):
     """filter() must return one boolean mask per frame tuple."""
     s = contaminated_scene
     f_tpl = build_frame_tuple(s["pts1"], s["pts2"])
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=500, consensus_ratio=0.3)
-    inliers = _run_filter(ransac)
+    inliers = ransac.filter()
     assert len(inliers) == 1
     mask = inliers[0]
     assert mask.shape == (s["n_total"],)
@@ -38,7 +26,7 @@ def test_ransac_finds_most_inliers(contaminated_scene):
     s = contaminated_scene
     f_tpl = build_frame_tuple(s["pts1"], s["pts2"])
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=500, consensus_ratio=0.3)
-    inliers = _run_filter(ransac)
+    inliers = ransac.filter()
     mask = inliers[0]
     recovered = int((mask & s["inlier_mask"]).sum())
     assert recovered >= int(0.9 * s["n_inliers"])
@@ -49,7 +37,7 @@ def test_ransac_rejects_outliers(contaminated_scene):
     s = contaminated_scene
     f_tpl = build_frame_tuple(s["pts1"], s["pts2"])
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=500, consensus_ratio=0.3)
-    inliers = _run_filter(ransac)
+    inliers = ransac.filter()
     mask = inliers[0]
     false_positives = int((mask & s["outlier_mask"]).sum())
     assert false_positives <= 0.1 * s["n_outliers"]
@@ -60,7 +48,7 @@ def test_ransac_stores_fundamental_matrix(contaminated_scene):
     s = contaminated_scene
     f_tpl = build_frame_tuple(s["pts1"], s["pts2"])
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=500, consensus_ratio=0.3)
-    _run_filter(ransac)
+    ransac.filter()
     assert f_tpl.fundamental_matrix is not None
     assert f_tpl.fundamental_matrix.shape == (3, 3)
     assert np.linalg.matrix_rank(f_tpl.fundamental_matrix, tol=1e-8) == 2
@@ -71,7 +59,7 @@ def test_ransac_fundamental_matrix_satisfies_epipolar_constraint(contaminated_sc
     s = contaminated_scene
     f_tpl = build_frame_tuple(s["pts1"], s["pts2"])
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=500, consensus_ratio=0.3)
-    _run_filter(ransac)
+    ransac.filter()
     F = f_tpl.fundamental_matrix
     # The refined F is a least-squares fit over the RANSAC inlier set (which may
     # include a few false-positive outliers), so we check the epipolar constraint
@@ -88,7 +76,7 @@ def test_ransac_matches_opencv_on_inliers(contaminated_scene):
     s = contaminated_scene
     f_tpl = build_frame_tuple(s["pts1"], s["pts2"])
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=500, consensus_ratio=0.3)
-    inliers = _run_filter(ransac)
+    inliers = ransac.filter()
     mask = inliers[0]
 
     import cv2 as cv
@@ -113,7 +101,7 @@ def test_ransac_pure_inliers_no_outliers(stereo_scene):
     s = stereo_scene
     f_tpl = build_frame_tuple(s["pts1"], s["pts2"])
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=200, consensus_ratio=0.5)
-    inliers = _run_filter(ransac)
+    inliers = ransac.filter()
     assert inliers[0].all()
 
 
@@ -124,7 +112,7 @@ def test_ransac_skips_frame_with_too_few_matches(K, rng):
     f_tpl = build_frame_tuple(pts1, pts2)
     ransac = EpipolarRANSAC([f_tpl], threshold=1.0, max_iter=10)
     with pytest.warns(UserWarning):
-        inliers = _run_filter(ransac)
+        inliers = ransac.filter()
     # The frame is skipped: no inlier mask is appended.
     assert len(inliers) == 0
     assert f_tpl.fundamental_matrix is None
@@ -142,8 +130,8 @@ def test_ransac_threshold_controls_strictness(contaminated_scene):
     ransac_loose = EpipolarRANSAC(
         [f_tpl_loose], threshold=1e6, max_iter=500, consensus_ratio=0.3
     )
-    strict = _run_filter(ransac_strict)[0]
-    loose = _run_filter(ransac_loose)[0]
+    strict = ransac_strict.filter()[0]
+    loose = ransac_loose.filter()[0]
     # The loose threshold admits every point (inliers + outliers).
     assert loose.sum() == s["n_total"]
     # The strict threshold admits fewer than the loose one.
@@ -157,7 +145,7 @@ def test_ransac_multiple_frame_tuples(contaminated_scene, stereo_scene):
     ransac = EpipolarRANSAC(
         [f_a, f_b], threshold=1.0, max_iter=300, consensus_ratio=0.3
     )
-    inliers = _run_filter(ransac)
+    inliers = ransac.filter()
     assert len(inliers) == 2
     assert inliers[0].shape == (contaminated_scene["n_total"],)
     assert inliers[1].shape == (stereo_scene["pts1"].shape[0],)
@@ -176,7 +164,7 @@ def test_ransac_refined_f_better_than_minimal_f(contaminated_scene, K, rng):
     pts2[s["inlier_mask"]] += rng.normal(0, 1.0, (s["n_inliers"], 2))
     f_tpl = build_frame_tuple(pts1, pts2)
     ransac = EpipolarRANSAC([f_tpl], threshold=2.0, max_iter=500, consensus_ratio=0.3)
-    inliers = _run_filter(ransac)
+    inliers = ransac.filter()
     mask = inliers[0]
     F_refined = f_tpl.fundamental_matrix
 

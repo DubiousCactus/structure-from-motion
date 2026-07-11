@@ -1,6 +1,3 @@
-import contextlib
-import io
-
 import cv2 as cv
 import numpy as np
 
@@ -35,8 +32,7 @@ def test_p3p_pure_translation_matches_opencv(K, rng):
 
     cam_db = CameraDatabase.from_single(K)
     pnp = PerspectiveNPoint([], cam_db)
-    with contextlib.redirect_stdout(io.StringIO()):
-        pose = pnp._solve_p3p(pts3D[:4], pts2D[:4], K)
+    pose = pnp._solve_p3p(pts3D[:4], pts2D[:4], K)
 
     assert pose is not None
     assert _reproj_error(K, pose, pts3D, pts2D) < 1.0
@@ -54,8 +50,7 @@ def test_p3p_matches_opencv_with_rotation(K, rng):
 
     cam_db = CameraDatabase.from_single(K)
     pnp = PerspectiveNPoint([], cam_db)
-    with contextlib.redirect_stdout(io.StringIO()):
-        pose = pnp._solve_p3p(pts3D[:4], pts2D[:4], K)
+    pose = pnp._solve_p3p(pts3D[:4], pts2D[:4], K)
 
     assert pose is not None
 
@@ -85,8 +80,7 @@ def test_p3p_reprojection_error_pure_translation(K, rng):
 
     cam_db = CameraDatabase.from_single(K)
     pnp = PerspectiveNPoint([], cam_db)
-    with contextlib.redirect_stdout(io.StringIO()):
-        pose = pnp._solve_p3p(pts3D[:4], pts2D[:4], K)
+    pose = pnp._solve_p3p(pts3D[:4], pts2D[:4], K)
 
     assert pose is not None
     assert _reproj_error(K, pose, pts3D, pts2D) < 0.5
@@ -112,7 +106,6 @@ def test_p3p_colinear_points_returns_none(K, rng):
 
     cam_db = CameraDatabase.from_single(K)
     pnp = PerspectiveNPoint([], cam_db)
-    with contextlib.redirect_stdout(io.StringIO()):
-        pose = pnp._solve_p3p(pts3D[:4], pts2D[:, :2], K)
+    pose = pnp._solve_p3p(pts3D[:4], pts2D[:, :2], K)
 
     assert pose is None
