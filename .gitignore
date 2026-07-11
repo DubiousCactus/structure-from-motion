@@ -14,3 +14,4 @@ svd.png
 *.jpg
 data/
 /intrinsics.npz
+/data
