@@ -15,6 +15,37 @@ if TYPE_CHECKING:
     from sfm.tui import SfmDisplay
 
 
+def match_orb_descriptors(
+    descriptors_a: Optional[np.ndarray],
+    descriptors_b: Optional[np.ndarray],
+    lowe_ratio: float,
+) -> tuple[int, int, list[cv.DMatch]]:
+    """Match ORB descriptors with exact Hamming distance and reciprocal Lowe filtering."""
+    if descriptors_a is None or descriptors_b is None:
+        return 0, 0, []
+
+    matcher = cv.BFMatcher(cv.NORM_HAMMING)
+    forward_knn = matcher.knnMatch(descriptors_a, descriptors_b, k=2)
+    reverse_knn = matcher.knnMatch(descriptors_b, descriptors_a, k=2)
+
+    forward_lowe = [
+        pair[0]
+        for pair in forward_knn
+        if len(pair) == 2 and pair[0].distance < lowe_ratio * pair[1].distance
+    ]
+    reverse_lowe = {
+        pair[0].queryIdx: pair[0].trainIdx
+        for pair in reverse_knn
+        if len(pair) == 2 and pair[0].distance < lowe_ratio * pair[1].distance
+    }
+    mutual_matches = [
+        match
+        for match in forward_lowe
+        if reverse_lowe.get(match.trainIdx) == match.queryIdx
+    ]
+    return len(forward_knn), len(forward_lowe), mutual_matches
+
+
 def extract_frames_impl(
     video_path: str,
     output_folder: str,
@@ -46,11 +77,17 @@ def extract_and_match_impl(
     max_frames: Optional[int] = None,
     debug: Optional[bool] = False,
     display: Optional["SfmDisplay"] = None,
+    orb_features: int = 2000,
+    lowe_ratio: float = 0.8,
 ):
     if intrinsics_path is not None and not os.path.isfile(intrinsics_path):
         raise FileNotFoundError(f"Intrinsics not found at {intrinsics_path}")
+    if orb_features < 1:
+        raise ValueError("orb_features must be positive")
+    if not 0.0 < lowe_ratio < 1.0:
+        raise ValueError("lowe_ratio must be between 0 and 1")
     # INFO: Stage 1: feature extraction using ORB
-    orb = cv.ORB_create(scaleFactor=1.2, nlevels=8)
+    orb = cv.ORB_create(nfeatures=orb_features, scaleFactor=1.2, nlevels=8)
     frame_files = sorted(os.listdir(frames_path))
     total_frames = len(frame_files) if max_frames is None else min(max_frames, len(frame_files))
     if display:
@@ -71,32 +108,32 @@ def extract_and_match_impl(
     if display:
         display.finish_extraction()
 
-    # INFO: Stage 2: KNN-based feature matching with FLANN
-    FLANN_INDEX_LSH = 6
-    index_params = dict(
-        algorithm=FLANN_INDEX_LSH,
-        table_number=6,  # 12
-        key_size=12,  # 20
-        multi_probe_level=1,
-    )  # 2
-    search_params = dict(checks=50)  # or pass empty dictionary
+    # INFO: Stage 2: exact Hamming KNN matching with reciprocal Lowe filtering.
     frame_tuples = []
     total_pairs = len(frame_features) - 1
     if display:
         display.begin_matching(total_pairs)
 
-    flann = cv.FlannBasedMatcher(index_params, search_params)
     for i in range(1, len(frame_features)):
         f1, f2 = frame_features[i - 1], frame_features[i]
-        matches = flann.knnMatch(f1.descriptors, f2.descriptors, k=2)
-        good_matches = []
-        for j, match in enumerate(matches):
-            if len(match) < 2:
-                continue
-            m, n = match
-            if m.distance < 0.85 * n.distance:
-                good_matches.append(m)
-        frame_tuples.append(FrameTuple(i - 1, i, f1, f2, good_matches))
+        knn_queries, lowe_matches, mutual_matches = match_orb_descriptors(
+            f1.descriptors, f2.descriptors, lowe_ratio
+        )
+        frame_tuples.append(FrameTuple(i - 1, i, f1, f2, mutual_matches))
+        if display:
+            from sfm.tui import PairStats
+
+            display.update_matching(
+                i - 1,
+                PairStats(
+                    pair_label=f"({i - 1},{i})",
+                    features_a=len(f1.keypoints),
+                    features_b=len(f2.keypoints),
+                    knn_queries=knn_queries,
+                    lowe_matches=lowe_matches,
+                    mutual_matches=len(mutual_matches),
+                ),
+            )
 
     # INFO: Stage 3: RANSAC outlier removal via the epipolar constraint.
     ransac = EpipolarRANSAC(frame_tuples, display=display, stats=display.stats if display else None)

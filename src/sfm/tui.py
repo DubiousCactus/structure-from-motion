@@ -16,8 +16,9 @@ class PairStats:
     pair_label: str = ""
     features_a: int = 0
     features_b: int = 0
-    raw_matches: int = 0
-    good_matches: int = 0
+    knn_queries: int = 0
+    lowe_matches: int = 0
+    mutual_matches: int = 0
     inliers: int = 0
     inlier_ratio: float = 0.0
     sampson_error: float = 0.0
@@ -48,7 +49,7 @@ class PipelineStats:
 STAGE_LABELS = {
     "init": "Initializing",
     "feature_extraction": "Feature Extraction (ORB)",
-    "matching": "KNN Feature Matching",
+    "matching": "Exact Hamming Feature Matching",
     "ransac": "RANSAC Outlier Rejection",
     "bootstrap": "E-matrix Bootstrap & Triangulation",
     "pnp": "PnP Pose Estimation",
@@ -251,11 +252,12 @@ class SfmDisplay:
         table.add_column("Pair", style="bold", width=10)
         table.add_column("Feat A", justify="right", width=7)
         table.add_column("Feat B", justify="right", width=7)
-        table.add_column("Raw", justify="right", width=6)
-        table.add_column("Good", justify="right", width=6)
+        table.add_column("KNN queries", justify="right", width=11)
+        table.add_column("Lowe pass", justify="right", width=9)
+        table.add_column("Reciprocal", justify="right", width=10)
         table.add_column("Inliers", justify="right", width=8)
         table.add_column("Ratio", justify="right", width=7)
-        table.add_column("Sampson ε", justify="right", width=9)
+        table.add_column("Mean Sampson (px^2)", justify="right", width=19)
         table.add_column("RANSAC", width=18)
         for p in s.per_pair:
             if p.ransac_running:
@@ -274,8 +276,9 @@ class SfmDisplay:
                 p.pair_label,
                 str(p.features_a) if p.features_a else "—",
                 str(p.features_b) if p.features_b else "—",
-                str(p.raw_matches) if p.raw_matches else "—",
-                str(p.good_matches) if p.good_matches else "—",
+                str(p.knn_queries) if p.knn_queries else "—",
+                str(p.lowe_matches) if p.lowe_matches else "—",
+                str(p.mutual_matches) if p.mutual_matches else "—",
                 inlier_str,
                 ratio_str,
                 err_str,

@@ -21,11 +21,19 @@ def extract_and_match(
     intrinsics_path: Optional[str] = None,
     max_frames: Optional[int] = None,
     debug: Optional[bool] = False,
+    orb_features: int = 2000,
+    lowe_ratio: float = 0.8,
 ):
     with SfmDisplay() as display:
         try:
             extract_and_match_impl(
-                frames_path, intrinsics_path, max_frames, debug, display=display
+                frames_path,
+                intrinsics_path,
+                max_frames,
+                debug,
+                display=display,
+                orb_features=orb_features,
+                lowe_ratio=lowe_ratio,
             )
         except Exception as e:
             display.set_error(str(e))

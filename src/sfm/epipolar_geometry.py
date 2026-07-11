@@ -283,9 +283,9 @@ class EpipolarRANSAC:
     def __init__(
         self,
         frame_tuples: List[FrameTuple],
-        consensus_ratio: float = 0.1,
-        max_iter: int = 1000,
-        threshold: float = 4,
+        consensus_ratio: float = 0.6,
+        max_iter: int = 2000,
+        threshold: float = 6,
         display: Optional["SfmDisplay"] = None,
         stats: Optional["PipelineStats"] = None,
     ):
@@ -329,16 +329,6 @@ class EpipolarRANSAC:
             assert X_a.shape == X_b.shape
             n_pts = X_a.shape[0]
             if self.display and self.stats:
-                from sfm.tui import PairStats
-
-                pair = PairStats(
-                    pair_label=f"({f_tuple.frame_a_id},{f_tuple.frame_b_id})",
-                    features_a=len(f_tuple.frame_a_features.keypoints),
-                    features_b=len(f_tuple.frame_b_features.keypoints),
-                    raw_matches=n_pts,
-                    good_matches=n_pts,
-                )
-                self.display.update_matching(f_tuple_idx, pair)
                 self.display.begin_ransac(f_tuple_idx)
             if n_pts < 8:
                 warnings.warn(
@@ -373,7 +363,9 @@ class EpipolarRANSAC:
                 this_err = err[this_inliers].mean()
 
                 if self.display and self.stats:
-                    self.display.update_ransac(f_tuple_idx, it + 1, int(n_inliers), float(this_err))
+                    self.display.update_ransac(
+                        f_tuple_idx, it + 1, int(n_inliers), float(this_err)
+                    )
 
                 if n_inliers > best_n_inliers or (
                     n_inliers == best_n_inliers and this_err < best_fit_err
@@ -391,7 +383,10 @@ class EpipolarRANSAC:
             if self.display and self.stats:
                 ratio = f_tuple.inliers / n_pts if n_pts > 0 else 0
                 self.display.finish_ransac_pair(
-                    f_tuple_idx, f_tuple.inliers, ratio, float(best_fit_err) if best_fit_err < np.inf else 0.0
+                    f_tuple_idx,
+                    f_tuple.inliers,
+                    ratio,
+                    float(best_fit_err) if best_fit_err < np.inf else 0.0,
                 )
         return self.frame_inliers
 
